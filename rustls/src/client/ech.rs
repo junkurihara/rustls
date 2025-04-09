@@ -465,6 +465,9 @@ impl EchState {
         // server random. This match signals that the server accepted the ECH offer.
         // Indexing safety: Random is [0; 32] by construction.
 
+        trace!("server_hello.random: {:#?}", server_hello.random);
+        trace!("derived 8 bytes from server_hello for ech: {:x?}", derived);
+
         match ConstantTimeEq::ct_eq(derived.as_ref(), server_hello.random.0[24..].as_ref()).into() {
             true => {
                 trace!("ECH accepted by server");
