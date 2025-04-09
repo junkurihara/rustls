@@ -335,10 +335,10 @@ mod client_hello {
             self.transcript.add_message(chm);
             let key_schedule = emit_server_hello(
                 &mut self.transcript,
-                &self.randoms,
+                &mut self.randoms,
                 self.suite,
                 cx,
-                &client_hello.session_id,
+                client_hello,
                 chosen_share_and_kxg,
                 chosen_psk_index,
                 resumedata
@@ -480,15 +480,20 @@ mod client_hello {
 
     fn emit_server_hello(
         transcript: &mut HandshakeHash,
-        randoms: &ConnectionRandoms,
+        randoms: &mut ConnectionRandoms,
         suite: &'static Tls13CipherSuite,
         cx: &mut ServerContext<'_>,
-        session_id: &SessionId,
+        client_hello: &ClientHelloPayload,
         share_and_kxgroup: (&KeyShareEntry, &'static dyn SupportedKxGroup),
         chosen_psk_idx: Option<usize>,
         resuming_psk: Option<&[u8]>,
         config: &ServerConfig,
     ) -> Result<KeyScheduleHandshake, Error> {
+        trace!(
+            "emit_server_hello: is_ech_inner = {}",
+            client_hello.is_ech_inner()
+        );
+
         let mut extensions = Vec::new();
 
         // Prepare key exchange; the caller already found the matching SupportedKxGroup
@@ -512,28 +517,9 @@ mod client_hello {
             extensions.push(ServerExtension::PresharedKey(psk_idx as u16));
         }
 
-        let sh = Message {
-            version: ProtocolVersion::TLSv1_2,
-            payload: MessagePayload::handshake(HandshakeMessagePayload {
-                typ: HandshakeType::ServerHello,
-                payload: HandshakePayload::ServerHello(ServerHelloPayload {
-                    legacy_version: ProtocolVersion::TLSv1_2,
-                    random: Random::from(randoms.server),
-                    session_id: *session_id,
-                    cipher_suite: suite.common.suite,
-                    compression_method: Compression::Null,
-                    extensions,
-                }),
-            }),
-        };
-
         cx.common.check_aligned_handshake()?;
 
         let client_hello_hash = transcript.hash_given(&[]);
-
-        trace!("sending server hello {:?}", sh);
-        transcript.add_message(&sh);
-        cx.common.send_msg(sh, false);
 
         // Start key schedule
         let key_schedule_pre_handshake = if let Some(psk) = resuming_psk {
@@ -551,7 +537,54 @@ mod client_hello {
         };
 
         // Do key exchange
-        let key_schedule = key_schedule_pre_handshake.into_handshake(ckx.secret);
+        let mut key_schedule = key_schedule_pre_handshake.into_handshake(ckx.secret);
+        if client_hello.is_ech_inner() {
+            randoms.server[24..].copy_from_slice(&[0u8; 8]);
+        }
+
+        let mut shp = ServerHelloPayload {
+            legacy_version: ProtocolVersion::TLSv1_2,
+            random: Random::from(randoms.server),
+            session_id: client_hello.session_id,
+            cipher_suite: suite.common.suite,
+            compression_method: Compression::Null,
+            extensions,
+        };
+        if client_hello.is_ech_inner() {
+            let sh = Message {
+                version: ProtocolVersion::TLSv1_2,
+                payload: MessagePayload::handshake(HandshakeMessagePayload {
+                    typ: HandshakeType::ServerHello,
+                    payload: HandshakePayload::ServerHello(shp.clone()),
+                }),
+            };
+
+            let mut confirmation_transcript = transcript.clone();
+
+            confirmation_transcript.add_message(&sh);
+
+            let derived = key_schedule.server_ech_confirmation_secret(
+                &randoms.client,
+                confirmation_transcript.current_hash(),
+            );
+            trace!("derived 8 bytes from server_hello for ech: {:x?}", derived);
+            randoms.server[24..].copy_from_slice(&derived);
+
+            shp.random = Random::from(randoms.server);
+        }
+        trace!("server_hello.random: {:#?}", shp.random);
+
+        let sh = Message {
+            version: ProtocolVersion::TLSv1_2,
+            payload: MessagePayload::handshake(HandshakeMessagePayload {
+                typ: HandshakeType::ServerHello,
+                payload: HandshakePayload::ServerHello(shp),
+            }),
+        };
+
+        trace!("sending server hello {:#?}", sh);
+        transcript.add_message(&sh);
+        cx.common.send_msg(sh, false);
 
         let handshake_hash = transcript.current_hash();
         let key_schedule = key_schedule.derive_server_handshake_secrets(

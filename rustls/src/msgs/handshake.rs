@@ -682,6 +682,9 @@ impl Codec<'_> for ClientExtension {
             ExtensionType::CompressCertificate => {
                 Self::CertificateCompressionAlgorithms(Vec::read(&mut sub)?)
             }
+            ExtensionType::EncryptedClientHello => {
+                Self::EncryptedClientHello(EncryptedClientHello::read(&mut sub)?)
+            }
             ExtensionType::EncryptedClientHelloOuterExtensions => {
                 Self::EncryptedClientHelloOuterExtensions(Vec::read(&mut sub)?)
             }
@@ -905,6 +908,12 @@ impl TlsListElement for ExtensionType {
 }
 
 impl ClientHelloPayload {
+    pub(crate) fn is_ech_inner(&self) -> bool {
+        let Some(EncryptedClientHello::Inner) = self.ech_extension() else {
+            return false;
+        };
+        true
+    }
     pub(crate) fn ech_inner_encoding(&self, to_compress: Vec<ExtensionType>) -> Vec<u8> {
         let mut bytes = Vec::new();
         self.payload_encode(&mut bytes, Encoding::EchInnerHello { to_compress });
@@ -975,6 +984,14 @@ impl ClientHelloPayload {
                 .iter()
                 .map(|ext| ext.ext_type()),
         )
+    }
+
+    pub(crate) fn ech_extension(&self) -> Option<&EncryptedClientHello> {
+        let ext = self.find_extension(ExtensionType::EncryptedClientHello)?;
+        match ext {
+            ClientExtension::EncryptedClientHello(ech) => Some(ech),
+            _ => None,
+        }
     }
 
     pub(crate) fn find_extension(&self, ext: ExtensionType) -> Option<&ClientExtension> {
