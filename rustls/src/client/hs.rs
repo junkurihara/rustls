@@ -29,10 +29,12 @@ use crate::msgs::base::Payload;
 use crate::msgs::enums::{
     CertificateType, Compression, ECPointFormat, ExtensionType, PskKeyExchangeMode,
 };
+use crate::msgs::handshake::ProtocolName;
+use crate::msgs::handshake::SupportedProtocolVersions;
 use crate::msgs::handshake::{
     CertificateStatusRequest, ClientExtension, ClientHelloPayload, ClientSessionTicket,
-    ConvertProtocolNameList, HandshakeMessagePayload, HandshakePayload, HasServerExtensions,
-    HelloRetryRequest, KeyShareEntry, Random, SessionId,
+    HandshakeMessagePayload, HandshakePayload, HasServerExtensions, HelloRetryRequest,
+    KeyShareEntry, Random, SessionId,
 };
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
@@ -100,6 +102,7 @@ fn find_session(
 
 pub(super) fn start_handshake(
     server_name: ServerName<'static>,
+    alpn_protocols: Vec<Vec<u8>>,
     extra_exts: Vec<ClientExtension>,
     config: Arc<ClientConfig>,
     cx: &mut ClientContext<'_>,
@@ -185,7 +188,7 @@ pub(super) fn start_handshake(
             #[cfg(feature = "tls12")]
             using_ems: false,
             sent_tls13_fake_ccs: false,
-            hello: ClientHelloDetails::new(extension_order_seed),
+            hello: ClientHelloDetails::new(alpn_protocols, extension_order_seed),
             session_id,
             server_name,
             prev_ech_ext: None,
@@ -248,31 +251,21 @@ fn emit_client_hello_for_retry(
     // Defense in depth: the ECH state should be None if ECH is disabled based on config
     // builder semantics.
     let forbids_tls12 = cx.common.is_quic() || ech_state.is_some();
-    let support_tls12 = config.supports_version(ProtocolVersion::TLSv1_2) && !forbids_tls12;
-    let support_tls13 = config.supports_version(ProtocolVersion::TLSv1_3);
 
-    let mut supported_versions = Vec::new();
-    if support_tls13 {
-        supported_versions.push(ProtocolVersion::TLSv1_3);
-    }
-
-    if support_tls12 {
-        supported_versions.push(ProtocolVersion::TLSv1_2);
-    }
+    let supported_versions = SupportedProtocolVersions {
+        tls12: config.supports_version(ProtocolVersion::TLSv1_2) && !forbids_tls12,
+        tls13: config.supports_version(ProtocolVersion::TLSv1_3),
+    };
 
     // should be unreachable thanks to config builder
-    assert!(!supported_versions.is_empty());
+    assert!(supported_versions.any(|_| true));
 
     // offer groups which are usable for any offered version
     let offered_groups = config
         .provider
         .kx_groups
         .iter()
-        .filter(|skxg| {
-            supported_versions
-                .iter()
-                .any(|v| skxg.usable_for_version(*v))
-        })
+        .filter(|skxg| supported_versions.any(|v| skxg.usable_for_version(v)))
         .map(|skxg| skxg.name())
         .collect();
 
@@ -288,7 +281,7 @@ fn emit_client_hello_for_retry(
         ClientExtension::CertificateStatusRequest(CertificateStatusRequest::build_ocsp()),
     ];
 
-    if support_tls13 {
+    if supported_versions.tls13 {
         if let Some(cas_extension) = config.verifier.root_hint_subjects() {
             exts.push(ClientExtension::AuthorityNames(cas_extension.to_owned()));
         }
@@ -311,13 +304,15 @@ fn emit_client_hello_for_retry(
         // as the SNI domain name. This happens unconditionally so we ignore the
         // `enable_sni` value. That will be used later to decide what to do for
         // the protected inner hello's SNI.
-        (Some(ech_state), _) => exts.push(ClientExtension::make_sni(&ech_state.outer_name)),
+        (Some(ech_state), _) => {
+            exts.push(ClientExtension::ServerName((&ech_state.outer_name).into()))
+        }
 
         // If we have no ECH state, and SNI is enabled, try to use the input server_name
         // for the SNI domain name.
         (None, true) => {
             if let ServerName::DnsName(dns_name) = &input.server_name {
-                exts.push(ClientExtension::make_sni(dns_name))
+                exts.push(ClientExtension::ServerName(dns_name.into()));
             }
         }
 
@@ -326,7 +321,7 @@ fn emit_client_hello_for_retry(
     };
 
     if let Some(key_share) = &key_share {
-        debug_assert!(support_tls13);
+        debug_assert!(supported_versions.tls13);
         let mut shares = vec![KeyShareEntry::new(key_share.group(), key_share.pub_key())];
 
         if !retryreq
@@ -357,36 +352,38 @@ fn emit_client_hello_for_retry(
         exts.push(ClientExtension::Cookie(cookie.clone()));
     }
 
-    if support_tls13 {
+    if supported_versions.tls13 {
         // We could support PSK_KE here too. Such connections don't
         // have forward secrecy, and are similar to TLS1.2 resumption.
         let psk_modes = vec![PskKeyExchangeMode::PSK_DHE_KE];
         exts.push(ClientExtension::PresharedKeyModes(psk_modes));
     }
 
-    if !config.alpn_protocols.is_empty() {
-        exts.push(ClientExtension::Protocols(Vec::from_slices(
-            &config
+    // Add ALPN extension if we have any protocols
+    if !input.hello.alpn_protocols.is_empty() {
+        exts.push(ClientExtension::Protocols(
+            input
+                .hello
                 .alpn_protocols
                 .iter()
-                .map(|proto| &proto[..])
+                .map(|proto| ProtocolName::from(proto.clone()))
                 .collect::<Vec<_>>(),
-        )));
+        ));
     }
 
-    input.hello.offered_cert_compression = if support_tls13 && !config.cert_decompressors.is_empty()
-    {
-        exts.push(ClientExtension::CertificateCompressionAlgorithms(
-            config
-                .cert_decompressors
-                .iter()
-                .map(|dec| dec.algorithm())
-                .collect(),
-        ));
-        true
-    } else {
-        false
-    };
+    input.hello.offered_cert_compression =
+        if supported_versions.tls13 && !config.cert_decompressors.is_empty() {
+            exts.push(ClientExtension::CertificateCompressionAlgorithms(
+                config
+                    .cert_decompressors
+                    .iter()
+                    .map(|dec| dec.algorithm())
+                    .collect(),
+            ));
+            true
+        } else {
+            false
+        };
 
     if config
         .client_auth_cert_resolver
@@ -599,7 +596,7 @@ fn emit_client_hello_for_retry(
         ech_state,
     };
 
-    Ok(if support_tls13 && retryreq.is_none() {
+    Ok(if supported_versions.tls13 && retryreq.is_none() {
         Box::new(ExpectServerHelloOrHelloRetryRequest { next, extra_exts })
     } else {
         Box::new(next)
@@ -677,16 +674,13 @@ fn prepare_resumption<'a>(
 
 pub(super) fn process_alpn_protocol(
     common: &mut CommonState,
-    config: &ClientConfig,
+    offered_protocols: &[Vec<u8>],
     proto: Option<&[u8]>,
 ) -> Result<(), Error> {
     common.alpn_protocol = proto.map(ToOwned::to_owned);
 
     if let Some(alpn_protocol) = &common.alpn_protocol {
-        if !config
-            .alpn_protocols
-            .contains(alpn_protocol)
-        {
+        if !offered_protocols.contains(alpn_protocol) {
             return Err(common.send_fatal_alert(
                 AlertDescription::IllegalParameter,
                 PeerMisbehaved::SelectedUnofferedApplicationProtocol,
@@ -700,7 +694,7 @@ pub(super) fn process_alpn_protocol(
     // mechanism) if and only if any ALPN protocols were configured. This defends against badly-behaved
     // servers which accept a connection that requires an application-layer protocol they do not
     // understand.
-    if common.is_quic() && common.alpn_protocol.is_none() && !config.alpn_protocols.is_empty() {
+    if common.is_quic() && common.alpn_protocol.is_none() && !offered_protocols.is_empty() {
         return Err(common.send_fatal_alert(
             AlertDescription::NoApplicationProtocol,
             Error::NoApplicationProtocol,
@@ -838,7 +832,11 @@ impl State<ClientConnectionData> for ExpectServerHello {
 
         // Extract ALPN protocol
         if !cx.common.is_tls13() {
-            process_alpn_protocol(cx.common, config, server_hello.alpn_protocol())?;
+            process_alpn_protocol(
+                cx.common,
+                &self.input.hello.alpn_protocols,
+                server_hello.alpn_protocol(),
+            )?;
         }
 
         // If ECPointFormats extension is supplied by the server, it must contain
