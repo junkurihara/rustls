@@ -672,7 +672,7 @@ pub(super) fn process_client_hello<'m>(
 ) -> Result<(&'m ClientHelloPayload, Vec<SignatureScheme>), Error> {
     let client_hello =
         require_handshake_msg!(m, HandshakeType::ClientHello, HandshakePayload::ClientHello)?;
-    trace!("we got a clienthello {:#client_hello?}");
+    trace!("we got a clienthello {:#?}", client_hello);
 
     if !client_hello
         .compression_methods
