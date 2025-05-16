@@ -310,8 +310,7 @@ impl<'a> Codec<'a> for ServerNamePayload<'a> {
 
                 HostNamePayload::IpAddress(_invalid) => {
                     warn!(
-                        "Illegal SNI extension: ignoring IP address presented as hostname ({:?})",
-                        _invalid
+                        "Illegal SNI extension: ignoring IP address presented as hostname ({_invalid:?})"
                     );
                     Some(Self::IpAddress)
                 }
@@ -1003,58 +1002,6 @@ pub struct ClientHelloPayload {
     pub extensions: Vec<ClientExtension>,
 }
 
-impl Codec<'_> for ClientHelloPayload {
-    fn encode(&self, bytes: &mut Vec<u8>) {
-        self.payload_encode(bytes, Encoding::Standard)
-    }
-
-    fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
-        let mut ret = Self {
-            client_version: ProtocolVersion::read(r)?,
-            random: Random::read(r)?,
-            session_id: SessionId::read(r)?,
-            cipher_suites: Vec::read(r)?,
-            compression_methods: Vec::read(r)?,
-            extensions: Vec::new(),
-        };
-
-        if r.any_left() {
-            ret.extensions = Vec::read(r)?;
-        }
-
-        match (r.any_left(), ret.extensions.is_empty()) {
-            (true, _) => Err(InvalidMessage::TrailingData("ClientHelloPayload")),
-            (_, true) => Err(InvalidMessage::MissingData("ClientHelloPayload")),
-            _ => Ok(ret),
-        }
-    }
-}
-
-/// RFC8446: `CipherSuite cipher_suites<2..2^16-2>;`
-impl TlsListElement for CipherSuite {
-    const SIZE_LEN: ListLength = ListLength::NonZeroU16 {
-        empty_error: InvalidMessage::IllegalEmptyList("CipherSuites"),
-    };
-}
-
-/// RFC5246: `CompressionMethod compression_methods<1..2^8-1>;`
-impl TlsListElement for Compression {
-    const SIZE_LEN: ListLength = ListLength::NonZeroU8 {
-        empty_error: InvalidMessage::IllegalEmptyList("Compressions"),
-    };
-}
-
-impl TlsListElement for ClientExtension {
-    const SIZE_LEN: ListLength = ListLength::U16;
-}
-
-/// draft-ietf-tls-esni-17: `ExtensionType OuterExtensions<2..254>;`
-impl TlsListElement for ExtensionType {
-    const SIZE_LEN: ListLength = ListLength::NonZeroU8 {
-        empty_error: InvalidMessage::IllegalEmptyList("ExtensionTypes"),
-    };
-}
-
 impl ClientHelloPayload {
     pub(crate) fn is_ech_inner(&self) -> bool {
         let Some(EncryptedClientHello::Inner) = self.ech_extension() else {
@@ -1319,6 +1266,58 @@ impl ClientHelloPayload {
             _ => unreachable!("extension type checked"),
         }
     }
+}
+
+impl Codec<'_> for ClientHelloPayload {
+    fn encode(&self, bytes: &mut Vec<u8>) {
+        self.payload_encode(bytes, Encoding::Standard)
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
+        let mut ret = Self {
+            client_version: ProtocolVersion::read(r)?,
+            random: Random::read(r)?,
+            session_id: SessionId::read(r)?,
+            cipher_suites: Vec::read(r)?,
+            compression_methods: Vec::read(r)?,
+            extensions: Vec::new(),
+        };
+
+        if r.any_left() {
+            ret.extensions = Vec::read(r)?;
+        }
+
+        match (r.any_left(), ret.extensions.is_empty()) {
+            (true, _) => Err(InvalidMessage::TrailingData("ClientHelloPayload")),
+            (_, true) => Err(InvalidMessage::MissingData("ClientHelloPayload")),
+            _ => Ok(ret),
+        }
+    }
+}
+
+/// RFC8446: `CipherSuite cipher_suites<2..2^16-2>;`
+impl TlsListElement for CipherSuite {
+    const SIZE_LEN: ListLength = ListLength::NonZeroU16 {
+        empty_error: InvalidMessage::IllegalEmptyList("CipherSuites"),
+    };
+}
+
+/// RFC5246: `CompressionMethod compression_methods<1..2^8-1>;`
+impl TlsListElement for Compression {
+    const SIZE_LEN: ListLength = ListLength::NonZeroU8 {
+        empty_error: InvalidMessage::IllegalEmptyList("Compressions"),
+    };
+}
+
+impl TlsListElement for ClientExtension {
+    const SIZE_LEN: ListLength = ListLength::U16;
+}
+
+/// draft-ietf-tls-esni-17: `ExtensionType OuterExtensions<2..254>;`
+impl TlsListElement for ExtensionType {
+    const SIZE_LEN: ListLength = ListLength::NonZeroU8 {
+        empty_error: InvalidMessage::IllegalEmptyList("ExtensionTypes"),
+    };
 }
 
 #[derive(Clone, Debug)]

@@ -638,7 +638,7 @@ mod client_hello {
             }),
         };
 
-        trace!("Requesting retry {:?}", m);
+        trace!("Requesting retry {m:?}");
         transcript.rollup_for_hrr();
         transcript.add_message(&m);
         common.send_msg(m, false);
@@ -724,7 +724,7 @@ mod client_hello {
             payload: HandshakePayload::EncryptedExtensions(ep.exts),
         };
 
-        trace!("sending encrypted extensions {:?}", ee);
+        trace!("sending encrypted extensions {ee:?}");
         flight.add(ee);
         Ok(early_data)
     }
@@ -770,7 +770,7 @@ mod client_hello {
             payload: HandshakePayload::CertificateRequestTls13(cr),
         };
 
-        trace!("Sending CertificateRequest {:?}", creq);
+        trace!("Sending CertificateRequest {creq:?}");
         flight.add(creq);
         Ok(true)
     }
@@ -788,7 +788,7 @@ mod client_hello {
             )),
         };
 
-        trace!("sending certificate {:?}", cert);
+        trace!("sending certificate {cert:?}");
         flight.add(cert);
     }
 
@@ -813,7 +813,7 @@ mod client_hello {
             payload: HandshakePayload::CompressedCertificate(entry.compressed_cert_payload()),
         };
 
-        trace!("sending compressed certificate {:?}", c);
+        trace!("sending compressed certificate {c:?}");
         flight.add(c);
     }
 
@@ -844,7 +844,7 @@ mod client_hello {
             payload: HandshakePayload::CertificateVerify(cv),
         };
 
-        trace!("sending certificate-verify {:?}", cv);
+        trace!("sending certificate-verify {cv:?}");
         flight.add(cv);
         Ok(())
     }
@@ -865,7 +865,7 @@ mod client_hello {
             payload: HandshakePayload::Finished(verify_data_payload),
         };
 
-        trace!("sending finished {:?}", fin);
+        trace!("sending finished {fin:?}");
         flight.add(fin);
         let hash_at_server_fin = flight.transcript.current_hash();
         flight.finish(cx.common);
@@ -1377,7 +1377,7 @@ impl ExpectFinished {
             typ: HandshakeType::NewSessionTicket,
             payload: HandshakePayload::NewSessionTicketTls13(payload),
         };
-        trace!("sending new ticket {:?} (stateless: {})", t, stateless);
+        trace!("sending new ticket {t:?} (stateless: {stateless})");
         flight.add(t);
 
         Ok(())
