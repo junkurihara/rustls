@@ -2,20 +2,35 @@
 //
 // Note: we don't use any of the standard 'cargo bench', 'test::Bencher',
 // etc. because it's unstable at the time of writing.
+#![warn(
+    clippy::alloc_instead_of_core,
+    clippy::clone_on_ref_ptr,
+    clippy::manual_let_else,
+    clippy::std_instead_of_core,
+    clippy::use_self,
+    clippy::upper_case_acronyms,
+    elided_lifetimes_in_paths,
+    trivial_casts,
+    trivial_numeric_casts,
+    unreachable_pub,
+    unused_import_braces,
+    unused_extern_crates,
+    unused_qualifications
+)]
 
+use core::mem;
+use core::num::NonZeroUsize;
+use core::ops::{Deref, DerefMut};
+use core::time::Duration;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::num::NonZeroUsize;
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{mem, thread};
+use std::thread;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, ValueEnum};
 use rustls::client::{Resumption, UnbufferedClientConnection};
 use rustls::crypto::CryptoProvider;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{
     NoServerSessionStorage, ProducesTickets, ServerSessionMemoryCache, UnbufferedServerConnection,
     WebPkiClientVerifier,
@@ -25,6 +40,7 @@ use rustls::{
     CipherSuite, ClientConfig, ClientConnection, ConnectionCommon, Error, HandshakeKind,
     RootCertStore, ServerConfig, ServerConnection, SideData,
 };
+use rustls_test::KeyType;
 
 pub fn main() {
     let args = Args::parse();
@@ -35,7 +51,10 @@ pub fn main() {
             plaintext_size,
             max_fragment_size,
         } => {
-            for bench in lookup_matching_benches(cipher_suite, args.key_type).iter() {
+            let provider = args
+                .provider
+                .unwrap_or_else(Provider::choose_default);
+            for bench in lookup_matching_benches(cipher_suite, args.key_type, &provider).iter() {
                 bench_bulk(
                     &Parameters::new(bench, &args)
                         .with_plaintext_size(*plaintext_size)
@@ -48,8 +67,10 @@ pub fn main() {
         | Command::HandshakeResume { cipher_suite }
         | Command::HandshakeTicket { cipher_suite } => {
             let resume = ResumptionParam::from_subcommand(args.command());
-
-            for bench in lookup_matching_benches(cipher_suite, args.key_type).iter() {
+            let provider = args
+                .provider
+                .unwrap_or_else(Provider::choose_default);
+            for bench in lookup_matching_benches(cipher_suite, args.key_type, &provider).iter() {
                 bench_handshake(
                     &Parameters::new(bench, &args)
                         .with_client_auth(ClientAuth::No)
@@ -61,7 +82,10 @@ pub fn main() {
             cipher_suite,
             count,
         } => {
-            for bench in lookup_matching_benches(cipher_suite, args.key_type).iter() {
+            let provider = args
+                .provider
+                .unwrap_or_else(Provider::choose_default);
+            for bench in lookup_matching_benches(cipher_suite, args.key_type, &provider).iter() {
                 let params = Parameters::new(bench, &args);
                 let client_config = params.client_config();
                 let server_config = params.server_config();
@@ -111,7 +135,7 @@ struct Args {
         long,
         help = "Which key type to use for server and client authentication.  The default is to run tests once for each key type."
     )]
-    key_type: Option<KeyType>,
+    key_type: Option<RequestedKeyType>,
 
     #[arg(long, help = "Which provider to test")]
     provider: Option<Provider>,
@@ -199,11 +223,11 @@ enum Api {
 
 impl Api {
     fn use_buffered(&self) -> bool {
-        matches!(*self, Api::Both | Api::Buffered)
+        matches!(*self, Self::Both | Self::Buffered)
     }
 
     fn use_unbuffered(&self) -> bool {
-        matches!(*self, Api::Both | Api::Unbuffered)
+        matches!(*self, Self::Both | Self::Unbuffered)
     }
 }
 
@@ -250,8 +274,8 @@ fn bench_handshake(params: &Parameters) {
     bench_handshake_buffered(
         1,
         ResumptionParam::No,
-        client_config.clone(),
-        server_config.clone(),
+        Arc::clone(&client_config),
+        Arc::clone(&server_config),
         &params.without_latency_measurement(),
     );
 
@@ -428,8 +452,8 @@ fn multithreaded(
     thread::scope(|s| {
         let threads = (0..count.into())
             .map(|_| {
-                let client_config = client_config.clone();
-                let server_config = server_config.clone();
+                let client_config = Arc::clone(client_config);
+                let server_config = Arc::clone(server_config);
                 s.spawn(|| f(client_config, server_config))
             })
             .collect::<Vec<_>>();
@@ -483,7 +507,7 @@ fn report_timings(
     for t in thread_timings.iter() {
         let rate = work_per_thread / which(t);
         total_rate += rate;
-        print!("{:.2}\t", rate);
+        print!("{rate:.2}\t");
     }
 
     println!(
@@ -669,19 +693,21 @@ fn bench_memory(
 
 fn lookup_matching_benches(
     ciphersuite_name: &str,
-    key_type: Option<KeyType>,
+    key_type: Option<RequestedKeyType>,
+    provider: &Provider,
 ) -> Vec<BenchmarkParam> {
     let r: Vec<BenchmarkParam> = ALL_BENCHMARKS
         .iter()
         .filter(|params| {
             format!("{:?}", params.ciphersuite).to_lowercase() == ciphersuite_name.to_lowercase()
-                && (key_type.is_none() || Some(params.key_type) == key_type)
+                && (key_type.is_none() || Some(params.key_type) == key_type.map(KeyType::from))
+                && provider.supports_benchmark(params)
         })
         .cloned()
         .collect();
 
     if r.is_empty() {
-        panic!("unknown suite {:?}", ciphersuite_name);
+        panic!("unknown suite {ciphersuite_name:?}");
     }
 
     r
@@ -772,7 +798,7 @@ impl Parameters {
                 }
                 WebPkiClientVerifier::builder_with_provider(
                     client_auth_roots.into(),
-                    provider.clone(),
+                    Arc::clone(&provider),
                 )
                 .build()
                 .unwrap()
@@ -808,11 +834,9 @@ impl Parameters {
 
     fn client_config(&self) -> Arc<ClientConfig> {
         let mut root_store = RootCertStore::empty();
-        root_store.add_parsable_certificates(
-            CertificateDer::pem_file_iter(self.proto.key_type.path_for("ca.cert"))
-                .unwrap()
-                .map(|result| result.unwrap()),
-        );
+        root_store
+            .add(self.proto.key_type.ca_cert())
+            .unwrap();
 
         let cfg = ClientConfig::builder_with_provider(
             CryptoProvider {
@@ -930,6 +954,8 @@ enum Provider {
     AwsLcRs,
     #[cfg(all(feature = "aws-lc-rs", feature = "fips"))]
     AwsLcRsFips,
+    #[cfg(feature = "graviola")]
+    Graviola,
     #[cfg(feature = "post-quantum")]
     PostQuantum,
     #[cfg(feature = "ring")]
@@ -945,6 +971,8 @@ impl Provider {
             Self::AwsLcRs => rustls::crypto::aws_lc_rs::default_provider(),
             #[cfg(all(feature = "aws-lc-rs", feature = "fips"))]
             Self::AwsLcRsFips => rustls::crypto::default_fips_provider(),
+            #[cfg(feature = "graviola")]
+            Self::Graviola => rustls_graviola::default_provider(),
             #[cfg(feature = "post-quantum")]
             Self::PostQuantum => rustls_post_quantum::provider(),
             #[cfg(feature = "ring")]
@@ -959,6 +987,8 @@ impl Provider {
             Self::AwsLcRs => rustls::crypto::aws_lc_rs::Ticketer::new(),
             #[cfg(all(feature = "aws-lc-rs", feature = "fips"))]
             Self::AwsLcRsFips => rustls::crypto::aws_lc_rs::Ticketer::new(),
+            #[cfg(feature = "graviola")]
+            Self::Graviola => rustls_graviola::Ticketer::new(),
             #[cfg(feature = "post-quantum")]
             Self::PostQuantum => rustls::crypto::aws_lc_rs::Ticketer::new(),
             #[cfg(feature = "ring")]
@@ -983,8 +1013,12 @@ impl Provider {
     }
 
     fn supports_key_type(&self, _key_type: KeyType) -> bool {
-        // currently all providers support all key types
-        true
+        match self {
+            #[cfg(feature = "graviola")]
+            Self::Graviola => !matches!(_key_type, KeyType::Ed25519),
+            // all other providers support all key types
+            _ => true,
+        }
     }
 
     fn choose_default() -> Self {
@@ -996,6 +1030,9 @@ impl Provider {
 
         #[cfg(all(feature = "aws-lc-rs", feature = "fips"))]
         available.push(Self::AwsLcRsFips);
+
+        #[cfg(feature = "graviola")]
+        available.push(Self::Graviola);
 
         #[cfg(feature = "post-quantum")]
         available.push(Self::PostQuantum);
@@ -1017,14 +1054,14 @@ impl Provider {
 #[derive(Clone)]
 struct BenchmarkParam {
     key_type: KeyType,
-    ciphersuite: rustls::CipherSuite,
+    ciphersuite: CipherSuite,
     version: &'static rustls::SupportedProtocolVersion,
 }
 
 impl BenchmarkParam {
     const fn new(
         key_type: KeyType,
-        ciphersuite: rustls::CipherSuite,
+        ciphersuite: CipherSuite,
         version: &'static rustls::SupportedProtocolVersion,
     ) -> Self {
         Self {
@@ -1035,49 +1072,22 @@ impl BenchmarkParam {
     }
 }
 
-// copied from tests/api.rs
 #[derive(PartialEq, Clone, Copy, Debug, ValueEnum)]
-enum KeyType {
+enum RequestedKeyType {
     Rsa2048,
     EcdsaP256,
     EcdsaP384,
     Ed25519,
 }
 
-impl KeyType {
-    fn path_for(&self, part: &str) -> String {
-        match self {
-            Self::Rsa2048 => format!("test-ca/rsa-2048/{}", part),
-            Self::EcdsaP256 => format!("test-ca/ecdsa-p256/{}", part),
-            Self::EcdsaP384 => format!("test-ca/ecdsa-p384/{}", part),
-            Self::Ed25519 => format!("test-ca/eddsa/{}", part),
+impl From<RequestedKeyType> for KeyType {
+    fn from(val: RequestedKeyType) -> Self {
+        match val {
+            RequestedKeyType::Rsa2048 => Self::Rsa2048,
+            RequestedKeyType::EcdsaP256 => Self::EcdsaP256,
+            RequestedKeyType::EcdsaP384 => Self::EcdsaP384,
+            RequestedKeyType::Ed25519 => Self::Ed25519,
         }
-    }
-
-    fn get_chain(&self) -> Vec<CertificateDer<'static>> {
-        CertificateDer::pem_file_iter(self.path_for("end.fullchain"))
-            .unwrap()
-            .map(|result| result.unwrap())
-            .collect()
-    }
-
-    fn get_key(&self) -> PrivateKeyDer<'static> {
-        PrivatePkcs8KeyDer::from_pem_file(self.path_for("end.key"))
-            .unwrap()
-            .into()
-    }
-
-    fn get_client_chain(&self) -> Vec<CertificateDer<'static>> {
-        CertificateDer::pem_file_iter(self.path_for("client.fullchain"))
-            .unwrap()
-            .map(|result| result.unwrap())
-            .collect()
-    }
-
-    fn get_client_key(&self) -> PrivateKeyDer<'static> {
-        PrivatePkcs8KeyDer::from_pem_file(self.path_for("client.key"))
-            .unwrap()
-            .into()
     }
 }
 
@@ -1110,7 +1120,7 @@ impl Unbuffered {
         }
     }
 
-    fn handshake(&mut self, peer: &mut Unbuffered) {
+    fn handshake(&mut self, peer: &mut Self) {
         loop {
             let mut progress = false;
 
@@ -1130,7 +1140,7 @@ impl Unbuffered {
         }
     }
 
-    fn swap_buffers(&mut self, peer: &mut Unbuffered) {
+    fn swap_buffers(&mut self, peer: &mut Self) {
         // our output becomes peer's input, and peer's input
         // becomes our output.
         mem::swap(&mut self.input, &mut peer.output);
@@ -1389,7 +1399,7 @@ where
                     offs += read;
                 }
                 Err(err) => {
-                    panic!("error on transfer {}..{}: {}", offs, sz, err);
+                    panic!("error on transfer {offs}..{sz}: {err}");
                 }
             }
 
@@ -1398,7 +1408,7 @@ where
                     let sz = match right.reader().read(&mut [0u8; 16_384]) {
                         Ok(sz) => sz,
                         Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
-                        Err(err) => panic!("failed to read data: {}", err),
+                        Err(err) => panic!("failed to read data: {err}"),
                     };
 
                     *left -= sz;

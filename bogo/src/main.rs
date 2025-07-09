@@ -4,9 +4,23 @@
 // https://boringssl.googlesource.com/boringssl/+/master/ssl/test
 //
 
-#![allow(clippy::disallowed_types)]
+#![warn(
+    clippy::alloc_instead_of_core,
+    clippy::clone_on_ref_ptr,
+    clippy::manual_let_else,
+    clippy::std_instead_of_core,
+    clippy::use_self,
+    clippy::upper_case_acronyms,
+    elided_lifetimes_in_paths,
+    trivial_casts,
+    trivial_numeric_casts,
+    unreachable_pub,
+    unused_import_braces,
+    unused_extern_crates,
+    unused_qualifications
+)]
 
-use std::fmt::{Debug, Formatter};
+use core::fmt::{Debug, Formatter};
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::{env, net, process, thread, time};
@@ -119,7 +133,7 @@ struct Options {
 impl Options {
     fn new() -> Self {
         let selected_provider = SelectedProvider::from_env();
-        Options {
+        Self {
             port: 0,
             shim_id: 0,
             side: Side::Client,
@@ -316,7 +330,7 @@ fn decode_hex(hex: &str) -> Vec<u8> {
     (0..hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-        .inspect(|x| println!("item {:?}", x))
+        .inspect(|x| println!("item {x:?}"))
         .collect()
 }
 
@@ -402,7 +416,7 @@ struct DummyServerAuth {
 
 impl DummyServerAuth {
     fn new(trusted_cert_file: &str) -> Self {
-        DummyServerAuth {
+        Self {
             parent: WebPkiServerVerifier::builder_with_provider(
                 load_root_certs(trusted_cert_file),
                 SelectedProvider::from_env()
@@ -478,10 +492,10 @@ struct FixedSignatureSchemeServerCertResolver {
 }
 
 impl server::ResolvesServerCert for FixedSignatureSchemeServerCertResolver {
-    fn resolve(&self, client_hello: ClientHello) -> Option<Arc<sign::CertifiedKey>> {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>> {
         let mut certkey = self.resolver.resolve(client_hello)?;
         Arc::make_mut(&mut certkey).key = Arc::new(FixedSignatureSchemeSigningKey {
-            key: certkey.key.clone(),
+            key: Arc::clone(&certkey.key),
             scheme: self.scheme,
         });
         Some(certkey)
@@ -507,7 +521,7 @@ impl client::ResolvesClientCert for FixedSignatureSchemeClientCertResolver {
             .resolver
             .resolve(root_hint_subjects, sigschemes)?;
         Arc::make_mut(&mut certkey).key = Arc::new(FixedSignatureSchemeSigningKey {
-            key: certkey.key.clone(),
+            key: Arc::clone(&certkey.key),
             scheme: self.scheme,
         });
         Some(certkey)
@@ -607,7 +621,7 @@ fn make_server_cfg(opts: &Options) -> Arc<ServerConfig> {
                 opts.root_hint_subjects.clone(),
             ))
         } else {
-            server::WebPkiClientVerifier::no_client_auth()
+            WebPkiClientVerifier::no_client_auth()
         };
 
     let cert = CertificateDer::pem_file_iter(&opts.cert_file)
@@ -640,7 +654,7 @@ fn make_server_cfg(opts: &Options) -> Arc<ServerConfig> {
     if opts.use_signing_scheme > 0 {
         let scheme = lookup_scheme(opts.use_signing_scheme);
         cfg.cert_resolver = Arc::new(FixedSignatureSchemeServerCertResolver {
-            resolver: cfg.cert_resolver.clone(),
+            resolver: Arc::clone(&cfg.cert_resolver),
             scheme,
         });
     }
@@ -692,8 +706,8 @@ struct ClientCacheWithoutKxHints {
 }
 
 impl ClientCacheWithoutKxHints {
-    fn new(delay: u32) -> Arc<ClientCacheWithoutKxHints> {
-        Arc::new(ClientCacheWithoutKxHints {
+    fn new(delay: u32) -> Arc<Self> {
+        Arc::new(Self {
             delay,
             storage: Arc::new(client::ClientSessionMemoryCache::new(32)),
         })
@@ -748,7 +762,7 @@ impl client::ClientSessionStore for ClientCacheWithoutKxHints {
 }
 
 impl Debug for ClientCacheWithoutKxHints {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         // Note: we omit self.storage here as it may contain sensitive data.
         f.debug_struct("ClientCacheWithoutKxHints")
             .field("delay", &self.delay)
@@ -811,7 +825,7 @@ fn make_client_cfg(opts: &Options) -> Arc<ClientConfig> {
     if !opts.cert_file.is_empty() && opts.use_signing_scheme > 0 {
         let scheme = lookup_scheme(opts.use_signing_scheme);
         cfg.client_auth_cert_resolver = Arc::new(FixedSignatureSchemeClientCertResolver {
-            resolver: cfg.client_auth_cert_resolver.clone(),
+            resolver: Arc::clone(&cfg.client_auth_cert_resolver),
             scheme,
         });
     }
@@ -865,7 +879,7 @@ fn quit_err(why: &str) -> ! {
 }
 
 fn handle_err(opts: &Options, err: Error) -> ! {
-    println!("TLS error: {:?}", err);
+    println!("TLS error: {err:?}");
     thread::sleep(time::Duration::from_millis(100));
 
     match err {
@@ -990,7 +1004,7 @@ fn handle_err(opts: &Options, err: Error) -> ! {
             quit(":CANNOT_PARSE_LEAF_CERT:")
         }
         Error::InvalidCertificate(CertificateError::BadSignature) => quit(":BAD_SIGNATURE:"),
-        Error::InvalidCertificate(e) => quit(&format!(":BAD_CERT: ({:?})", e)),
+        Error::InvalidCertificate(e) => quit(&format!(":BAD_CERT: ({e:?})")),
         Error::PeerSentOversizedRecord => quit(":DATA_LENGTH_TOO_LONG:"),
         _ => {
             println_err!("unhandled error: {:?}", err);
@@ -1002,7 +1016,7 @@ fn handle_err(opts: &Options, err: Error) -> ! {
 fn flush(sess: &mut Connection, conn: &mut net::TcpStream) {
     while sess.wants_write() {
         if let Err(err) = sess.write_tls(conn) {
-            println!("IO error: {:?}", err);
+            println!("IO error: {err:?}");
             process::exit(0);
         }
     }
@@ -1033,12 +1047,12 @@ fn read_n_bytes(opts: &Options, sess: &mut Connection, conn: &mut net::TcpStream
     let mut bytes = [0u8; MAX_MESSAGE_SIZE];
     match conn.read(&mut bytes[..n]) {
         Ok(count) => {
-            println!("read {:?} bytes", count);
+            println!("read {count:?} bytes");
             sess.read_tls(&mut io::Cursor::new(&mut bytes[..count]))
                 .expect("read_tls not expected to fail reading from buffer");
         }
         Err(err) if err.kind() == io::ErrorKind::ConnectionReset => {}
-        Err(err) => panic!("invalid read: {}", err),
+        Err(err) => panic!("invalid read: {err}"),
     };
 
     after_read(opts, sess, conn);
@@ -1048,7 +1062,7 @@ fn read_all_bytes(opts: &Options, sess: &mut Connection, conn: &mut net::TcpStre
     match sess.read_tls(conn) {
         Ok(_) => {}
         Err(err) if err.kind() == io::ErrorKind::ConnectionReset => {}
-        Err(err) => panic!("invalid read: {}", err),
+        Err(err) => panic!("invalid read: {err}"),
     };
 
     after_read(opts, sess, conn);
@@ -1269,7 +1283,7 @@ fn exec(opts: &Options, mut sess: Connection, count: usize) {
                 println!("EOF (tcp)");
                 return;
             }
-            Err(err) => panic!("unhandled read error {:?}", err),
+            Err(err) => panic!("unhandled read error {err:?}"),
         };
 
         if opts.shut_down_after_handshake && !sent_shutdown && !sess.is_handshaking() {
@@ -1278,7 +1292,7 @@ fn exec(opts: &Options, mut sess: Connection, count: usize) {
         }
 
         if quench_writes && len > 0 {
-            println!("unquenching writes after {:?}", len);
+            println!("unquenching writes after {len:?}");
             quench_writes = false;
         }
 
@@ -1302,7 +1316,7 @@ pub fn main() {
         println!("No");
         process::exit(0);
     }
-    println!("options: {:?}", args);
+    println!("options: {args:?}");
 
     let mut opts = Options::new();
 
@@ -1355,7 +1369,7 @@ pub fn main() {
             "-tls13-variant" => {
                 let variant = args.remove(0).parse::<u16>().unwrap();
                 if variant != 1 {
-                    println!("NYI TLS1.3 variant selection: {:?} {:?}", arg, variant);
+                    println!("NYI TLS1.3 variant selection: {arg:?} {variant:?}");
                     process::exit(BOGO_NACK);
                 }
             }
@@ -1426,7 +1440,7 @@ pub fn main() {
             "-expect-tls13-downgrade" |
             "-enable-signed-cert-timestamps" |
             "-expect-session-id" => {
-                println!("not checking {}; NYI", arg);
+                println!("not checking {arg}; NYI");
             }
 
             "-key-update" => {
@@ -1541,7 +1555,7 @@ pub fn main() {
                         opts.expect_reject_early_data = true;
                     }
                     _ => {
-                        println!("NYI early data reason: {}", reason);
+                        println!("NYI early data reason: {reason}");
                         process::exit(1);
                     }
                 }
@@ -1706,7 +1720,7 @@ pub fn main() {
             "-expect-resumable-across-names" |
             "-expect-not-resumable-across-names" |
             "-use-custom-verify-callback" => {
-                println!("NYI option {:?}", arg);
+                println!("NYI option {arg:?}");
                 process::exit(BOGO_NACK);
             }
 
@@ -1718,13 +1732,13 @@ pub fn main() {
             }
 
             _ => {
-                println!("unhandled option {:?}", arg);
+                println!("unhandled option {arg:?}");
                 process::exit(1);
             }
         }
     }
 
-    println!("opts {:?}", opts);
+    println!("opts {opts:?}");
 
     #[cfg(unix)]
     if opts.wait_for_debugger {

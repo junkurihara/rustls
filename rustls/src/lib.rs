@@ -56,15 +56,18 @@
 //!
 //! The community has also started developing third-party providers for Rustls:
 //!
-//!   * [`rustls-mbedtls-provider`] - a provider that uses [`mbedtls`] for cryptography.
-//!   * [`rustls-openssl`] - a provider that uses [OpenSSL] for cryptography.
 //!   * [`boring-rustls-provider`] - a work-in-progress provider that uses [`boringssl`] for
 //!     cryptography.
+//!   * [`rustls-graviola`] - a provider that uses [`graviola`] for cryptography.
+//!   * [`rustls-mbedtls-provider`] - a provider that uses [`mbedtls`] for cryptography.
+//!   * [`rustls-openssl`] - a provider that uses [OpenSSL] for cryptography.
 //!   * [`rustls-rustcrypto`] - an experimental provider that uses the crypto primitives
 //!     from [`RustCrypto`] for cryptography.
 //!   * [`rustls-symcrypt`] - a provider that uses Microsoft's [SymCrypt] library.
 //!   * [`rustls-wolfcrypt-provider`] - a work-in-progress provider that uses [`wolfCrypt`] for cryptography.
 //!
+//! [`rustls-graviola`]: https://crates.io/crates/rustls-graviola
+//! [`graviola`]: https://github.com/ctz/graviola
 //! [`rustls-mbedtls-provider`]: https://github.com/fortanix/rustls-mbedtls-provider
 //! [`mbedtls`]: https://github.com/Mbed-TLS/mbedtls
 //! [`rustls-openssl`]: https://github.com/tofay/rustls-openssl
@@ -545,10 +548,9 @@ pub mod unbuffered {
 // The public interface is:
 pub use crate::builder::{ConfigBuilder, ConfigSide, WantsVerifier, WantsVersions};
 pub use crate::common_state::{CommonState, HandshakeKind, IoState, Side};
-pub use crate::conn::kernel;
 #[cfg(feature = "std")]
 pub use crate::conn::{Connection, Reader, Writer};
-pub use crate::conn::{ConnectionCommon, SideData};
+pub use crate::conn::{ConnectionCommon, SideData, kernel};
 pub use crate::enums::{
     AlertDescription, CertificateCompressionAlgorithm, CipherSuite, ContentType, HandshakeType,
     ProtocolVersion, SignatureAlgorithm, SignatureScheme,
@@ -588,6 +590,8 @@ pub mod client {
     mod ech;
     pub(super) mod handy;
     mod hs;
+    #[cfg(test)]
+    mod test;
     #[cfg(feature = "tls12")]
     mod tls12;
     mod tls13;
@@ -629,6 +633,8 @@ pub mod server {
     pub(crate) mod handy;
     mod hs;
     mod server_conn;
+    #[cfg(test)]
+    mod test;
     #[cfg(feature = "tls12")]
     mod tls12;
     mod tls13;
