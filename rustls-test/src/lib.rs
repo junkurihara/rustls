@@ -1,6 +1,5 @@
 #![warn(
     clippy::alloc_instead_of_core,
-    clippy::clone_on_ref_ptr,
     clippy::manual_let_else,
     clippy::std_instead_of_core,
     clippy::use_self,
@@ -783,8 +782,8 @@ pub fn make_pair_for_arc_configs(
     server_config: &Arc<ServerConfig>,
 ) -> (ClientConnection, ServerConnection) {
     (
-        ClientConnection::new(Arc::clone(client_config), server_name("localhost")).unwrap(),
-        ServerConnection::new(Arc::clone(server_config)).unwrap(),
+        ClientConnection::new(client_config.clone(), server_name("localhost")).unwrap(),
+        ServerConnection::new(server_config.clone()).unwrap(),
     )
 }
 

@@ -973,8 +973,9 @@ fn client_only_attempts_resumption_with_compatible_security() {
         let mut client_config =
             make_client_config_with_versions_with_auth(kt, &[version], &provider);
         client_config.resumption = base_client_config.resumption.clone();
-        client_config.client_auth_cert_resolver =
-            Arc::clone(&base_client_config.client_auth_cert_resolver);
+        client_config.client_auth_cert_resolver = base_client_config
+            .client_auth_cert_resolver
+            .clone();
 
         CountingLogger::reset();
         let (mut client, mut server) =
@@ -1689,7 +1690,7 @@ fn client_with_sni_disabled_does_not_send_sni() {
             let mut client =
                 ClientConnection::new(Arc::new(client_config), server_name("value-not-sent"))
                     .unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
 
             let err = do_handshake_until_error(&mut client, &mut server);
             assert!(err.is_err());
@@ -1710,7 +1711,7 @@ fn client_checks_server_certificate_with_given_name() {
                 server_name("not-the-right-hostname.com"),
             )
             .unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
 
             let err = do_handshake_until_error(&mut client, &mut server);
             assert_eq!(
@@ -1791,7 +1792,7 @@ fn client_check_server_certificate_ee_revoked() {
                 make_client_config_with_verifier(&[version], builder.clone(), &provider);
             let mut client =
                 ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
 
             // We expect the handshake to fail since the server's EE certificate is revoked.
             let err = do_handshake_until_error(&mut client, &mut server);
@@ -1835,7 +1836,7 @@ fn client_check_server_certificate_ee_unknown_revocation() {
             );
             let mut client =
                 ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
 
             // We expect if we use the forbid_unknown_verifier that the handshake will fail since the
             // server's EE certificate's revocation status is unknown given the CRLs we've provided.
@@ -1855,7 +1856,7 @@ fn client_check_server_certificate_ee_unknown_revocation() {
             );
             let mut client =
                 ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
             let res = do_handshake_until_error(&mut client, &mut server);
             assert!(res.is_ok());
         }
@@ -1893,7 +1894,7 @@ fn client_check_server_certificate_intermediate_revoked() {
             );
             let mut client =
                 ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
 
             // We expect the handshake to fail when using the full chain verifier since the intermediate's
             // EE certificate is revoked.
@@ -1912,7 +1913,7 @@ fn client_check_server_certificate_intermediate_revoked() {
             );
             let mut client =
                 ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
             // We expect the handshake to succeed when we use the verifier that only checks the EE certificate
             // revocation status. The revoked intermediate status should not be checked.
             let res = do_handshake_until_error(&mut client, &mut server);
@@ -1950,7 +1951,7 @@ fn client_check_server_certificate_ee_crl_expired() {
             );
             let mut client =
                 ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
 
             // We expect the handshake to fail since the CRL is expired.
             let err = do_handshake_until_error(&mut client, &mut server);
@@ -1968,7 +1969,7 @@ fn client_check_server_certificate_ee_crl_expired() {
             );
             let mut client =
                 ClientConnection::new(Arc::new(client_config), server_name("localhost")).unwrap();
-            let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+            let mut server = ServerConnection::new(server_config.clone()).unwrap();
 
             // We expect the handshake to succeed when CRL expiration is ignored.
             let res = do_handshake_until_error(&mut client, &mut server);
@@ -3550,7 +3551,7 @@ fn server_exposes_offered_sni_even_if_resolver_fails() {
 
     for version in rustls::ALL_VERSIONS {
         let client_config = make_client_config_with_versions(kt, &[version], &provider);
-        let mut server = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+        let mut server = ServerConnection::new(server_config.clone()).unwrap();
         let mut client =
             ClientConnection::new(Arc::new(client_config), server_name("thisdoesNOTexist.com"))
                 .unwrap();
@@ -3585,7 +3586,7 @@ fn sni_resolver_works() {
     server_config.cert_resolver = Arc::new(resolver);
     let server_config = Arc::new(server_config);
 
-    let mut server1 = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+    let mut server1 = ServerConnection::new(server_config.clone()).unwrap();
     let mut client1 = ClientConnection::new(
         Arc::new(make_client_config(kt, &provider)),
         server_name("localhost"),
@@ -3594,7 +3595,7 @@ fn sni_resolver_works() {
     let err = do_handshake_until_error(&mut client1, &mut server1);
     assert_eq!(err, Ok(()));
 
-    let mut server2 = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+    let mut server2 = ServerConnection::new(server_config.clone()).unwrap();
     let mut client2 = ClientConnection::new(
         Arc::new(make_client_config(kt, &provider)),
         server_name("notlocalhost"),
@@ -3677,7 +3678,7 @@ fn sni_resolver_lower_cases_configured_names() {
     server_config.cert_resolver = Arc::new(resolver);
     let server_config = Arc::new(server_config);
 
-    let mut server1 = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+    let mut server1 = ServerConnection::new(server_config.clone()).unwrap();
     let mut client1 = ClientConnection::new(
         Arc::new(make_client_config(kt, &provider)),
         server_name("localhost"),
@@ -3708,7 +3709,7 @@ fn sni_resolver_lower_cases_queried_names() {
     server_config.cert_resolver = Arc::new(resolver);
     let server_config = Arc::new(server_config);
 
-    let mut server1 = ServerConnection::new(Arc::clone(&server_config)).unwrap();
+    let mut server1 = ServerConnection::new(server_config.clone()).unwrap();
     let mut client1 = ClientConnection::new(
         Arc::new(make_client_config(kt, &provider)),
         server_name("LOCALHOST"),
@@ -5194,7 +5195,7 @@ mod test_quic {
 
         // full handshake
         let mut client = quic::ClientConnection::new(
-            Arc::clone(&client_config),
+            client_config.clone(),
             quic::Version::V1,
             server_name("localhost"),
             client_params.into(),
@@ -5202,7 +5203,7 @@ mod test_quic {
         .unwrap();
 
         let mut server = quic::ServerConnection::new(
-            Arc::clone(&server_config),
+            server_config.clone(),
             quic::Version::V1,
             server_params.into(),
         )
@@ -5246,7 +5247,7 @@ mod test_quic {
 
         // 0-RTT handshake
         let mut client = quic::ClientConnection::new(
-            Arc::clone(&client_config),
+            client_config.clone(),
             quic::Version::V1,
             server_name("localhost"),
             client_params.into(),
@@ -5259,7 +5260,7 @@ mod test_quic {
         );
 
         let mut server = quic::ServerConnection::new(
-            Arc::clone(&server_config),
+            server_config.clone(),
             quic::Version::V1,
             server_params.into(),
         )
@@ -5298,7 +5299,7 @@ mod test_quic {
             .unwrap();
 
             let mut server = quic::ServerConnection::new(
-                Arc::clone(&server_config),
+                server_config.clone(),
                 quic::Version::V1,
                 server_params.into(),
             )
@@ -5773,7 +5774,7 @@ mod test_quic {
         );
         let client_config = Arc::new(client_config);
         let mut client = quic::ClientConnection::new(
-            Arc::clone(&client_config),
+            client_config.clone(),
             quic::Version::V1,
             server_name("localhost"),
             b"client params"[..].into(),
@@ -5802,48 +5803,6 @@ mod test_quic {
 } // mod test_quic
 
 #[test]
-fn test_client_does_not_offer_sha1() {
-    use rustls::HandshakeType;
-    use rustls::internal::msgs::codec::Reader;
-    use rustls::internal::msgs::handshake::HandshakePayload;
-    use rustls::internal::msgs::message::{MessagePayload, OutboundOpaqueMessage};
-
-    let provider = provider::default_provider();
-    for kt in KeyType::all_for_provider(&provider) {
-        for version in rustls::ALL_VERSIONS {
-            let client_config = make_client_config_with_versions(*kt, &[version], &provider);
-            let (mut client, _) =
-                make_pair_for_configs(client_config, make_server_config(*kt, &provider));
-
-            assert!(client.wants_write());
-            let mut buf = [0u8; 262144];
-            let sz = client
-                .write_tls(&mut buf.as_mut())
-                .unwrap();
-            let msg = OutboundOpaqueMessage::read(&mut Reader::init(&buf[..sz])).unwrap();
-            let msg = Message::try_from(msg.into_plain_message()).unwrap();
-            assert!(msg.is_handshake_type(HandshakeType::ClientHello));
-
-            let client_hello = match msg.payload {
-                MessagePayload::Handshake { parsed, .. } => match parsed.payload {
-                    HandshakePayload::ClientHello(ch) => ch,
-                    _ => unreachable!(),
-                },
-                _ => unreachable!(),
-            };
-
-            let sigalgs = client_hello
-                .sigalgs_extension()
-                .unwrap();
-            assert!(
-                !sigalgs.contains(&SignatureScheme::RSA_PKCS1_SHA1),
-                "sha1 unexpectedly offered"
-            );
-        }
-    }
-}
-
-#[test]
 fn test_client_config_keyshare() {
     let provider = provider::default_provider();
     let kx_groups = vec![provider::kx_group::SECP384R1];
@@ -5869,6 +5828,26 @@ fn test_client_config_keyshare_mismatch() {
     );
     let (mut client, mut server) = make_pair_for_configs(client_config, server_config);
     assert!(do_handshake_until_error(&mut client, &mut server).is_err());
+}
+
+#[test]
+fn exercise_all_key_exchange_methods() {
+    for version in rustls::ALL_VERSIONS {
+        for kx_group in provider::ALL_KX_GROUPS {
+            if !kx_group.usable_for_version(version.version) {
+                continue;
+            }
+
+            let provider = provider::default_provider();
+            let client_config =
+                make_client_config_with_kx_groups(KeyType::Rsa2048, vec![*kx_group], &provider);
+            let server_config =
+                make_server_config_with_kx_groups(KeyType::Rsa2048, vec![*kx_group], &provider);
+            let (mut client, mut server) = make_pair_for_configs(client_config, server_config);
+            assert!(do_handshake_until_error(&mut client, &mut server).is_ok());
+            println!("kx_group {:?} is self-consistent", kx_group.name());
+        }
+    }
 }
 
 #[cfg(feature = "tls12")]
@@ -5993,84 +5972,6 @@ fn test_client_sends_helloretryrequest() {
     ));
 }
 
-#[test]
-fn test_client_rejects_hrr_with_varied_session_id() {
-    use rustls::internal::msgs::handshake::SessionId;
-    let different_session_id =
-        SessionId::random(provider::default_provider().secure_random).unwrap();
-
-    let assert_client_sends_hello_with_secp384 = |msg: &mut Message| -> Altered {
-        match &mut msg.payload {
-            MessagePayload::Handshake { parsed, encoded } => match &mut parsed.payload {
-                HandshakePayload::ClientHello(ch) => {
-                    let keyshares = ch
-                        .keyshare_extension()
-                        .expect("missing key share extension");
-                    assert_eq!(keyshares.len(), 1);
-                    assert_eq!(keyshares[0].group(), rustls::NamedGroup::secp384r1);
-
-                    ch.session_id = different_session_id;
-                    *encoded = Payload::new(parsed.get_encoding());
-                }
-                _ => panic!("unexpected handshake message {parsed:?}"),
-            },
-            _ => panic!("unexpected non-handshake message {msg:?}"),
-        };
-        Altered::InPlace
-    };
-
-    let assert_server_requests_retry_and_echoes_session_id = |msg: &mut Message| -> Altered {
-        match &msg.payload {
-            MessagePayload::Handshake { parsed, .. } => match &parsed.payload {
-                HandshakePayload::HelloRetryRequest(hrr) => {
-                    let group = hrr.requested_key_share_group();
-                    assert_eq!(group, Some(rustls::NamedGroup::X25519));
-
-                    assert_eq!(hrr.session_id, different_session_id);
-                }
-                _ => panic!("unexpected handshake message {parsed:?}"),
-            },
-            MessagePayload::ChangeCipherSpec(_) => (),
-            _ => panic!("unexpected non-handshake message {msg:?}"),
-        };
-        Altered::InPlace
-    };
-
-    // client prefers a secp384r1 key share, server only accepts x25519
-    let provider = provider::default_provider();
-    let client_config = make_client_config_with_kx_groups(
-        KeyType::Rsa2048,
-        vec![provider::kx_group::SECP384R1, provider::kx_group::X25519],
-        &provider,
-    );
-
-    let server_config = make_server_config_with_kx_groups(
-        KeyType::Rsa2048,
-        vec![provider::kx_group::X25519],
-        &provider,
-    );
-
-    let (client, server) = make_pair_for_configs(client_config, server_config);
-    let (mut client, mut server) = (client.into(), server.into());
-    transfer_altered(
-        &mut client,
-        assert_client_sends_hello_with_secp384,
-        &mut server,
-    );
-    server.process_new_packets().unwrap();
-    transfer_altered(
-        &mut server,
-        assert_server_requests_retry_and_echoes_session_id,
-        &mut client,
-    );
-    assert_eq!(
-        client.process_new_packets(),
-        Err(Error::PeerMisbehaved(
-            PeerMisbehaved::IllegalHelloRetryRequestWithWrongSessionId
-        ))
-    );
-}
-
 #[cfg(feature = "tls12")]
 #[test]
 fn test_client_attempts_to_use_unsupported_kx_group() {
@@ -6165,6 +6066,13 @@ fn test_client_sends_share_for_less_preferred_group() {
     // first handshake
     let (mut client_1, mut server) = make_pair_for_configs(client_config_1, server_config.clone());
     do_handshake_until_error(&mut client_1, &mut server).unwrap();
+    assert_eq!(
+        client_1
+            .negotiated_key_exchange_group()
+            .map(|kxg| kxg.name()),
+        Some(NamedGroup::secp384r1)
+    );
+    assert_eq!(client_1.handshake_kind(), Some(HandshakeKind::Full));
 
     let ops = shared_storage.ops();
     println!("storage {ops:#?}");
@@ -6174,53 +6082,19 @@ fn test_client_sends_share_for_less_preferred_group() {
         ClientStorageOp::SetKxHint(_, rustls::NamedGroup::secp384r1)
     ));
 
-    // second handshake (this must HRR to the most-preferred group)
-    let assert_client_sends_secp384_share = |msg: &mut Message| -> Altered {
-        match &msg.payload {
-            MessagePayload::Handshake { parsed, .. } => match &parsed.payload {
-                HandshakePayload::ClientHello(ch) => {
-                    let keyshares = ch
-                        .keyshare_extension()
-                        .expect("missing key share extension");
-                    assert_eq!(keyshares.len(), 1);
-                    assert_eq!(keyshares[0].group(), rustls::NamedGroup::secp384r1);
-                }
-                _ => panic!("unexpected handshake message {parsed:?}"),
-            },
-            _ => panic!("unexpected non-handshake message {msg:?}"),
-        };
-        Altered::InPlace
-    };
-
-    let assert_server_requests_retry_to_x25519 = |msg: &mut Message| -> Altered {
-        match &msg.payload {
-            MessagePayload::Handshake { parsed, .. } => match &parsed.payload {
-                HandshakePayload::HelloRetryRequest(hrr) => {
-                    let group = hrr.requested_key_share_group();
-                    assert_eq!(group, Some(rustls::NamedGroup::X25519));
-                }
-                _ => panic!("unexpected handshake message {parsed:?}"),
-            },
-            MessagePayload::ChangeCipherSpec(_) => (),
-            _ => panic!("unexpected non-handshake message {msg:?}"),
-        };
-        Altered::InPlace
-    };
-
-    let (client_2, server) = make_pair_for_configs(client_config_2, server_config);
-    let (mut client_2, mut server) = (client_2.into(), server.into());
-    transfer_altered(
-        &mut client_2,
-        assert_client_sends_secp384_share,
-        &mut server,
+    // second handshake; HRR'd from secp384r1 to X25519
+    let (mut client_2, mut server) = make_pair_for_configs(client_config_2, server_config);
+    do_handshake(&mut client_2, &mut server);
+    assert_eq!(
+        client_2
+            .negotiated_key_exchange_group()
+            .map(|kxg| kxg.name()),
+        Some(NamedGroup::X25519)
     );
-    server.process_new_packets().unwrap();
-    transfer_altered(
-        &mut server,
-        assert_server_requests_retry_to_x25519,
-        &mut client_2,
+    assert_eq!(
+        client_2.handshake_kind(),
+        Some(HandshakeKind::FullWithHelloRetryRequest)
     );
-    client_2.process_new_packets().unwrap();
 }
 
 #[cfg(feature = "tls12")]
@@ -6554,75 +6428,6 @@ fn test_client_rejects_illegal_tls13_ccs() {
             PeerMisbehaved::IllegalMiddleboxChangeCipherSpec
         ))
     );
-}
-
-#[cfg(feature = "tls12")]
-#[test]
-fn test_client_rejects_no_extended_master_secret_extension_when_require_ems_or_fips() {
-    let key_type = KeyType::Rsa2048;
-    let provider = provider::default_provider();
-    let mut client_config = make_client_config(key_type, &provider);
-    if provider_is_fips() {
-        assert!(client_config.require_ems);
-    } else {
-        client_config.require_ems = true;
-    }
-    let mut server_config = finish_server_config(
-        key_type,
-        server_config_builder_with_versions(&[&rustls::version::TLS12], &provider),
-    );
-    server_config.require_ems = false;
-    let (client, server) = make_pair_for_configs(client_config, server_config);
-    let (mut client, mut server) = (client.into(), server.into());
-    transfer_altered(&mut client, remove_ems_request, &mut server);
-    server.process_new_packets().unwrap();
-    transfer_altered(&mut server, |_| Altered::InPlace, &mut client);
-    assert_eq!(
-        client.process_new_packets(),
-        Err(Error::PeerIncompatible(
-            PeerIncompatible::ExtendedMasterSecretExtensionRequired
-        ))
-    );
-}
-
-#[cfg(feature = "tls12")]
-#[test]
-fn test_server_rejects_no_extended_master_secret_extension_when_require_ems_or_fips() {
-    let key_type = KeyType::Rsa2048;
-    let provider = provider::default_provider();
-    let client_config = make_client_config(key_type, &provider);
-    let mut server_config = finish_server_config(
-        key_type,
-        server_config_builder_with_versions(&[&rustls::version::TLS12], &provider),
-    );
-    if provider_is_fips() {
-        assert!(server_config.require_ems);
-    } else {
-        server_config.require_ems = true;
-    }
-    let (client, server) = make_pair_for_configs(client_config, server_config);
-    let (mut client, mut server) = (client.into(), server.into());
-    transfer_altered(&mut client, remove_ems_request, &mut server);
-    assert_eq!(
-        server.process_new_packets(),
-        Err(Error::PeerIncompatible(
-            PeerIncompatible::ExtendedMasterSecretExtensionRequired
-        ))
-    );
-}
-
-#[cfg(feature = "tls12")]
-fn remove_ems_request(msg: &mut Message) -> Altered {
-    if let MessagePayload::Handshake { parsed, encoded } = &mut msg.payload {
-        if let HandshakePayload::ClientHello(ch) = &mut parsed.payload {
-            ch.extensions
-                .retain(|ext| !matches!(ext, ClientExtension::ExtendedMasterSecretRequest))
-        }
-
-        *encoded = Payload::new(parsed.get_encoding());
-    }
-
-    Altered::InPlace
 }
 
 /// https://github.com/rustls/rustls/issues/797
@@ -8473,58 +8278,6 @@ fn large_client_hello_acceptor() {
 }
 
 #[test]
-fn hybrid_kx_component_share_offered_if_supported_seperately() {
-    let kt = KeyType::Rsa2048;
-    let client_config = finish_client_config(
-        kt,
-        ClientConfig::builder_with_provider(
-            CryptoProvider {
-                kx_groups: vec![&FakeHybrid, provider::kx_group::SECP384R1],
-                ..provider::default_provider()
-            }
-            .into(),
-        )
-        .with_safe_default_protocol_versions()
-        .unwrap(),
-    );
-    let server_config = make_server_config(kt, &provider::default_provider());
-
-    let (client, server) = make_pair_for_configs(client_config, server_config);
-    let (mut client, mut server) = (client.into(), server.into());
-    transfer_altered(
-        &mut client,
-        assert_client_sends_hello_with_two_key_shares,
-        &mut server,
-    );
-}
-
-#[test]
-fn hybrid_kx_component_share_not_offered_unless_supported_seperately() {
-    let kt = KeyType::Rsa2048;
-    let client_config = finish_client_config(
-        kt,
-        ClientConfig::builder_with_provider(
-            CryptoProvider {
-                kx_groups: vec![&FakeHybrid],
-                ..provider::default_provider()
-            }
-            .into(),
-        )
-        .with_safe_default_protocol_versions()
-        .unwrap(),
-    );
-    let server_config = make_server_config(kt, &provider::default_provider());
-
-    let (client, server) = make_pair_for_configs(client_config, server_config);
-    let (mut client, mut server) = (client.into(), server.into());
-    transfer_altered(
-        &mut client,
-        assert_client_sends_hello_with_one_hybrid_key_share,
-        &mut server,
-    );
-}
-
-#[test]
 fn hybrid_kx_component_share_offered_but_server_chooses_something_else() {
     let kt = KeyType::Rsa2048;
     let client_config = finish_client_config(
@@ -8588,44 +8341,6 @@ impl ActiveKeyExchange for FakeHybridActive {
     fn group(&self) -> NamedGroup {
         FakeHybrid.name()
     }
-}
-
-fn assert_client_sends_hello_with_two_key_shares(msg: &mut Message) -> Altered {
-    match &mut msg.payload {
-        MessagePayload::Handshake { parsed, .. } => match &mut parsed.payload {
-            HandshakePayload::ClientHello(ch) => {
-                let keyshares = ch
-                    .keyshare_extension()
-                    .expect("missing key share extension");
-                assert_eq!(keyshares.len(), 2);
-                assert_eq!(keyshares[0].group(), FakeHybrid.name());
-                assert_eq!(keyshares[0].get_encoding(), b"\x12\x34\x00\x06hybrid");
-                assert_eq!(keyshares[1].group(), NamedGroup::secp384r1);
-                assert_eq!(keyshares[1].get_encoding(), b"\x00\x18\x00\x09classical");
-            }
-            _ => panic!("unexpected handshake message {parsed:?}"),
-        },
-        _ => panic!("unexpected non-handshake message {msg:?}"),
-    };
-    Altered::InPlace
-}
-
-fn assert_client_sends_hello_with_one_hybrid_key_share(msg: &mut Message) -> Altered {
-    match &mut msg.payload {
-        MessagePayload::Handshake { parsed, .. } => match &mut parsed.payload {
-            HandshakePayload::ClientHello(ch) => {
-                let keyshares = ch
-                    .keyshare_extension()
-                    .expect("missing key share extension");
-                assert_eq!(keyshares.len(), 1);
-                assert_eq!(keyshares[0].group(), FakeHybrid.name());
-                assert_eq!(keyshares[0].get_encoding(), b"\x12\x34\x00\x06hybrid");
-            }
-            _ => panic!("unexpected handshake message {parsed:?}"),
-        },
-        _ => panic!("unexpected non-handshake message {msg:?}"),
-    };
-    Altered::InPlace
 }
 
 const CONFIDENTIALITY_LIMIT: u64 = 1024;

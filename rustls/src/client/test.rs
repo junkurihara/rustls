@@ -1,13 +1,22 @@
 #![cfg(any(feature = "ring", feature = "aws_lc_rs"))]
 use std::prelude::v1::*;
+use std::vec;
 
 use pki_types::{CertificateDer, ServerName};
 
 use crate::client::{ClientConfig, ClientConnection, Resumption, Tls12Resumption};
+use crate::crypto::CryptoProvider;
+use crate::enums::{CipherSuite, HandshakeType, ProtocolVersion, SignatureScheme};
+use crate::msgs::base::PayloadU16;
 use crate::msgs::codec::Reader;
-use crate::msgs::handshake::{ClientHelloPayload, HandshakeMessagePayload, HandshakePayload};
+use crate::msgs::enums::{Compression, NamedGroup};
+use crate::msgs::handshake::{
+    ClientHelloPayload, HandshakeMessagePayload, HandshakePayload, HelloRetryExtension,
+    HelloRetryRequest, Random, ServerHelloPayload, SessionId,
+};
 use crate::msgs::message::{Message, MessagePayload, OutboundOpaqueMessage};
-use crate::{Error, RootCertStore};
+use crate::sync::Arc;
+use crate::{Error, PeerIncompatible, PeerMisbehaved, RootCertStore};
 
 #[macro_rules_attribute::apply(test_for_each_provider)]
 mod tests {
@@ -29,6 +38,152 @@ mod tests {
         let ch = client_hello_sent_for_config(config).unwrap();
         assert!(ch.ticket_extension().is_none());
     }
+
+    #[test]
+    fn test_client_does_not_offer_sha1() {
+        for version in crate::ALL_VERSIONS {
+            let config =
+                ClientConfig::builder_with_provider(super::provider::default_provider().into())
+                    .with_protocol_versions(&[version])
+                    .unwrap()
+                    .with_root_certificates(roots())
+                    .with_no_client_auth();
+            let ch = client_hello_sent_for_config(config).unwrap();
+            let sigalgs = ch.sigalgs_extension().unwrap();
+            assert!(
+                !sigalgs.contains(&SignatureScheme::RSA_PKCS1_SHA1),
+                "sha1 unexpectedly offered"
+            );
+        }
+    }
+
+    #[test]
+    fn test_client_rejects_hrr_with_varied_session_id() {
+        let config =
+            ClientConfig::builder_with_provider(super::provider::default_provider().into())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots())
+                .with_no_client_auth();
+        let mut conn =
+            ClientConnection::new(config.into(), ServerName::try_from("localhost").unwrap())
+                .unwrap();
+        let mut sent = Vec::new();
+        conn.write_tls(&mut sent).unwrap();
+
+        // server replies with HRR, but does not echo `session_id` as required.
+        let hrr = Message {
+            version: ProtocolVersion::TLSv1_3,
+            payload: MessagePayload::handshake(HandshakeMessagePayload {
+                typ: HandshakeType::HelloRetryRequest,
+                payload: HandshakePayload::HelloRetryRequest(HelloRetryRequest {
+                    cipher_suite: CipherSuite::TLS13_AES_128_GCM_SHA256,
+                    legacy_version: ProtocolVersion::TLSv1_2,
+                    session_id: SessionId::empty(),
+                    extensions: vec![HelloRetryExtension::Cookie(PayloadU16::new(vec![
+                        1, 2, 3, 4,
+                    ]))],
+                }),
+            }),
+        };
+
+        conn.read_tls(&mut hrr.into_wire_bytes().as_slice())
+            .unwrap();
+        assert_eq!(
+            conn.process_new_packets().unwrap_err(),
+            PeerMisbehaved::IllegalHelloRetryRequestWithWrongSessionId.into()
+        );
+    }
+
+    #[cfg(feature = "tls12")]
+    #[test]
+    fn test_client_rejects_no_extended_master_secret_extension_when_require_ems_or_fips() {
+        let mut config =
+            ClientConfig::builder_with_provider(super::provider::default_provider().into())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots())
+                .with_no_client_auth();
+        if config.provider.fips() {
+            assert!(config.require_ems);
+        } else {
+            config.require_ems = true;
+        }
+
+        let config = Arc::new(config);
+        let mut conn =
+            ClientConnection::new(config.clone(), ServerName::try_from("localhost").unwrap())
+                .unwrap();
+        let mut sent = Vec::new();
+        conn.write_tls(&mut sent).unwrap();
+
+        let sh = Message {
+            version: ProtocolVersion::TLSv1_3,
+            payload: MessagePayload::handshake(HandshakeMessagePayload {
+                typ: HandshakeType::ServerHello,
+                payload: HandshakePayload::ServerHello(ServerHelloPayload {
+                    random: Random::new(config.provider.secure_random).unwrap(),
+                    compression_method: Compression::Null,
+                    cipher_suite: CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                    legacy_version: ProtocolVersion::TLSv1_2,
+                    session_id: SessionId::empty(),
+                    extensions: vec![],
+                }),
+            }),
+        };
+        conn.read_tls(&mut sh.into_wire_bytes().as_slice())
+            .unwrap();
+
+        assert_eq!(
+            conn.process_new_packets(),
+            Err(PeerIncompatible::ExtendedMasterSecretExtensionRequired.into())
+        );
+    }
+}
+
+// invalid with fips, as we can't offer X25519 separately
+#[cfg(all(
+    feature = "aws-lc-rs",
+    feature = "prefer-post-quantum",
+    not(feature = "fips")
+))]
+#[test]
+fn hybrid_kx_component_share_offered_if_supported_separately() {
+    let ch = client_hello_sent_for_config(
+        ClientConfig::builder_with_provider(crate::crypto::aws_lc_rs::default_provider().into())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots())
+            .with_no_client_auth(),
+    )
+    .unwrap();
+
+    let key_shares = ch.keyshare_extension().unwrap();
+    assert_eq!(key_shares.len(), 2);
+    assert_eq!(key_shares[0].group, NamedGroup::X25519MLKEM768);
+    assert_eq!(key_shares[1].group, NamedGroup::X25519);
+}
+
+#[cfg(feature = "aws-lc-rs")]
+#[test]
+fn hybrid_kx_component_share_not_offered_unless_supported_separately() {
+    use crate::crypto::aws_lc_rs;
+    let provider = CryptoProvider {
+        kx_groups: vec![aws_lc_rs::kx_group::X25519MLKEM768],
+        ..aws_lc_rs::default_provider()
+    };
+    let ch = client_hello_sent_for_config(
+        ClientConfig::builder_with_provider(provider.into())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots())
+            .with_no_client_auth(),
+    )
+    .unwrap();
+
+    let key_shares = ch.keyshare_extension().unwrap();
+    assert_eq!(key_shares.len(), 1);
+    assert_eq!(key_shares[0].group, NamedGroup::X25519MLKEM768);
 }
 
 fn client_hello_sent_for_config(config: ClientConfig) -> Result<ClientHelloPayload, Error> {
