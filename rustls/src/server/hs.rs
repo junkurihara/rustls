@@ -455,7 +455,7 @@ impl ExpectClientHello {
             transcript_buffer.set_client_auth_enabled();
         }
 
-        let ech = super::ech::EchServerState::new(config.ech_keys.resolve());
+        let ech = super::ech::EchServerState::new(config.ech_keys.resolve(), config.ech_backend);
         Self {
             config,
             protocol,
@@ -564,7 +564,10 @@ impl ExpectClientHello {
         }
 
         // Choose a certificate.
-        let is_ech_inner = self.ech.is_accepted();
+        // ECH is only confirmed in TLS 1.3. A split-mode backend can receive an
+        // inner ClientHello that ends up negotiating TLS 1.2, which then must not
+        // be treated as accepted ECH (RFC 9849 section 7.2).
+        let is_ech_inner = self.ech.is_accepted() && T::VERSION == ProtocolVersion::TLSv1_3;
         let credentials = match self
             .config
             .cert_resolver

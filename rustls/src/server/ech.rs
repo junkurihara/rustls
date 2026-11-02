@@ -241,7 +241,11 @@ impl EchFrontendInfo {
 pub(crate) struct EchServerState {
     /// Resolved keys for this connection.
     keys: EchKeys,
-    /// Whether an ECH outer extension was present in the ClientHello.
+    /// Whether an inner ClientHello received directly (from a split-mode
+    /// client-facing server) is accepted.
+    backend_enabled: bool,
+    /// Whether an ECH extension was present in the ClientHello: an outer
+    /// extension, or an inner extension accepted as a split-mode backend.
     offered: bool,
     /// HPKE decryption context, present only when ECH decryption succeeded.
     frontend: Option<Box<EchFrontend>>,
@@ -254,9 +258,13 @@ pub(crate) struct EchServerState {
 
 impl EchServerState {
     /// Initial state with resolved keys.
-    pub(crate) fn new(keys: EchKeys) -> Self {
+    ///
+    /// `backend_enabled` controls whether this server acts as a split-mode
+    /// backend (see `ServerConfig::ech_backend`).
+    pub(crate) fn new(keys: EchKeys, backend_enabled: bool) -> Self {
         Self {
             keys,
+            backend_enabled,
             offered: false,
             frontend: None,
             backend: None,
@@ -269,9 +277,18 @@ impl EchServerState {
         self.backend.is_some()
     }
 
-    /// Whether an ECH outer extension was present in the ClientHello.
+    /// Whether ECH was accepted as a split-mode backend.
     ///
-    /// True for both accepted and rejected ECH (including GREASE).
+    /// That is, the inner ClientHello was received directly from a
+    /// client-facing server, rather than decrypted by this server.
+    pub(crate) fn is_split_backend(&self) -> bool {
+        self.backend.is_some() && self.frontend.is_none()
+    }
+
+    /// Whether an ECH extension was present in the ClientHello.
+    ///
+    /// True for both accepted and rejected ECH (including GREASE), and for
+    /// an inner extension accepted as a split-mode backend.
     /// Used to decide whether to include an ECH extension in HRR.
     pub(crate) fn ech_offered(&self) -> bool {
         self.offered
@@ -316,7 +333,9 @@ impl EchServerState {
     /// reuses the HPKE context from the first attempt.
     ///
     /// Returns the decrypted inner ClientHello if ECH was accepted,
-    /// or `None` to proceed with the outer ClientHello.
+    /// or `None` to proceed with the outer ClientHello. As a split-mode
+    /// backend, the received ClientHello is itself the inner ClientHello,
+    /// so `None` is returned when it is accepted.
     pub(crate) fn resolve<'m>(
         &mut self,
         input: &'m Input<'m>,
@@ -335,8 +354,19 @@ impl EchServerState {
         match &outer_hello.encrypted_client_hello {
             // RFC 9849 section 7: a shared-mode server receiving Inner directly
             // from the network MUST abort with illegal_parameter.
-            Some(EncryptedClientHello::Inner) => {
+            Some(EncryptedClientHello::Inner) if !self.backend_enabled => {
                 Err(PeerMisbehaved::InvalidEchClientHelloInner.into())
+            }
+            // RFC 9849 section 7.2: a split-mode backend receives the inner
+            // ClientHello forwarded by the client-facing server, processes it
+            // as-is, and confirms ECH acceptance using its random. Here the
+            // received hello is itself the inner ClientHello.
+            Some(EncryptedClientHello::Inner) => {
+                self.offered = true;
+                self.backend = Some(EchBackend {
+                    inner_random: outer_hello.random,
+                });
+                Ok(None)
             }
             Some(EncryptedClientHello::Outer(_)) => {
                 self.offered = true;
@@ -370,12 +400,36 @@ impl EchServerState {
 
     /// Resolve ECH for a retried ClientHello (after HelloRetryRequest).
     fn resolve_retry<'m>(&mut self, input: &'m Input<'m>) -> Result<Option<Input<'m>>, Error> {
+        let hello = require_handshake_msg!(
+            input.message,
+            HandshakeType::ClientHello,
+            HandshakePayload::ClientHello
+        )?;
+
         let Some(backend) = &mut self.backend else {
-            return Ok(None);
+            // ECH was not accepted for the first ClientHello, so the second
+            // one cannot be an inner ClientHello either.
+            return match &hello.encrypted_client_hello {
+                Some(EncryptedClientHello::Inner) => {
+                    Err(PeerMisbehaved::InvalidEchClientHelloInner.into())
+                }
+                _ => Ok(None),
+            };
         };
 
         let Some(frontend) = &mut self.frontend else {
-            return Ok(None);
+            // Split-mode backend: the second ClientHello must also be an inner
+            // ClientHello forwarded by the client-facing server.
+            return match &hello.encrypted_client_hello {
+                Some(EncryptedClientHello::Inner) => {
+                    backend.inner_random = hello.random;
+                    Ok(None)
+                }
+                Some(EncryptedClientHello::Outer(_)) => {
+                    Err(PeerMisbehaved::InvalidEchClientHelloInner.into())
+                }
+                None => Err(PeerMisbehaved::MissingEchExtension.into()),
+            };
         };
 
         let outer = OuterClientHello::from_input(input)?;
@@ -1379,5 +1433,125 @@ mod tests {
             make_outer(&hello, &[]).decrypt_ech(&index),
             EchDecryptResult::Rejected
         ));
+    }
+
+    fn make_inner_hello(random: [u8; 32]) -> ClientHelloPayload {
+        let mut hello = make_hello(random);
+        hello.encrypted_client_hello = Some(EncryptedClientHello::Inner);
+        hello
+    }
+
+    fn make_input(hello: ClientHelloPayload) -> Input<'static> {
+        Input {
+            message: Message {
+                version: crate::enums::ProtocolVersion::TLSv1_2,
+                payload: MessagePayload::handshake(HandshakeMessagePayload(
+                    HandshakePayload::ClientHello(hello),
+                )),
+            },
+            aligned_handshake: None,
+        }
+    }
+
+    #[test]
+    fn inner_rejected_without_backend() {
+        let mut state = EchServerState::new(EchKeys::empty(), false);
+        let input = make_input(make_inner_hello([0x42; 32]));
+        assert!(matches!(
+            state.resolve(&input, false),
+            Err(Error::PeerMisbehaved(
+                PeerMisbehaved::InvalidEchClientHelloInner
+            ))
+        ));
+        assert!(!state.is_accepted());
+    }
+
+    #[test]
+    fn inner_accepted_as_split_backend() {
+        let mut state = EchServerState::new(EchKeys::empty(), true);
+        let input = make_input(make_inner_hello([0x42; 32]));
+        assert!(matches!(state.resolve(&input, false), Ok(None)));
+        assert!(state.is_accepted());
+        assert!(state.is_split_backend());
+        assert!(state.ech_offered());
+        assert!(state.frontend_info().is_none());
+        assert!(state.retry_configs().is_none());
+        assert_eq!(state.backend().unwrap().inner_random.0, [0x42; 32]);
+    }
+
+    #[test]
+    fn not_offered_with_backend_enabled() {
+        let mut state = EchServerState::new(EchKeys::empty(), true);
+        let input = make_input(make_hello([0x42; 32]));
+        assert!(matches!(state.resolve(&input, false), Ok(None)));
+        assert!(!state.is_accepted());
+        assert!(!state.is_split_backend());
+        assert!(!state.ech_offered());
+    }
+
+    #[test]
+    fn split_backend_retry_accepts_inner() {
+        let mut state = EchServerState::new(EchKeys::empty(), true);
+        let first = make_input(make_inner_hello([0x42; 32]));
+        state.resolve(&first, false).unwrap();
+
+        // A distinct random makes the update of the confirmation input observable.
+        let second = make_input(make_inner_hello([0x43; 32]));
+        assert!(matches!(state.resolve(&second, true), Ok(None)));
+        assert!(state.is_split_backend());
+        assert_eq!(state.backend().unwrap().inner_random.0, [0x43; 32]);
+    }
+
+    #[test]
+    fn split_backend_retry_rejects_missing_inner() {
+        let mut state = EchServerState::new(EchKeys::empty(), true);
+        let first = make_input(make_inner_hello([0x42; 32]));
+        state.resolve(&first, false).unwrap();
+
+        let second = make_input(make_hello([0x42; 32]));
+        assert!(matches!(
+            state.resolve(&second, true),
+            Err(Error::PeerMisbehaved(PeerMisbehaved::MissingEchExtension))
+        ));
+    }
+
+    #[test]
+    fn split_backend_retry_rejects_outer() {
+        let mut state = EchServerState::new(EchKeys::empty(), true);
+        let first = make_input(make_inner_hello([0x42; 32]));
+        state.resolve(&first, false).unwrap();
+
+        let mut hello = make_hello([0x42; 32]);
+        hello.encrypted_client_hello =
+            Some(EncryptedClientHello::Outer(EncryptedClientHelloOuter {
+                cipher_suite: HpkeSymmetricCipherSuite::default(),
+                config_id: 1,
+                enc: SizedPayload::from(Payload::new(vec![])),
+                payload: SizedPayload::from(Payload::new(vec![0u8; 64])),
+            }));
+        let second = make_input(hello);
+        assert!(matches!(
+            state.resolve(&second, true),
+            Err(Error::PeerMisbehaved(
+                PeerMisbehaved::InvalidEchClientHelloInner
+            ))
+        ));
+    }
+
+    #[test]
+    fn retry_rejects_unexpected_inner() {
+        for backend_enabled in [false, true] {
+            let mut state = EchServerState::new(EchKeys::empty(), backend_enabled);
+            let first = make_input(make_hello([0x42; 32]));
+            state.resolve(&first, false).unwrap();
+
+            let second = make_input(make_inner_hello([0x42; 32]));
+            assert!(matches!(
+                state.resolve(&second, true),
+                Err(Error::PeerMisbehaved(
+                    PeerMisbehaved::InvalidEchClientHelloInner
+                ))
+            ));
+        }
     }
 }

@@ -350,9 +350,10 @@ fn exec(opts: &Options, mut sess: impl Connection + 'static, key_log: &KeyLogMem
             if ech_accept_required && !sess.is_handshaking() {
                 let accepted = match opts.side {
                     Side::Client => client(&mut sess).ech_status() == EchStatus::Accepted,
-                    Side::Server => server(&mut sess)
-                        .ech_accepted()
-                        .is_some(),
+                    Side::Server => {
+                        let server = server(&mut sess);
+                        server.ech_accepted().is_some() || server.ech_backend_accepted()
+                    }
                 };
                 if !accepted {
                     quit_err("ECH was not accepted, but we expect the opposite");
@@ -1784,6 +1785,10 @@ fn make_server_cfg(opts: &Options, key_log: &Arc<KeyLogMemo>) -> Arc<ServerConfi
 
         cfg.ech_keys = Arc::new(FixedEchKeys::new(ech_keys));
     }
+
+    // BoringSSL servers always act as ECH split-mode backends, so its
+    // `ECH-Server-ECHInner*` tests pass no flag to enable this.
+    cfg.ech_backend = true;
 
     Arc::new(cfg)
 }

@@ -244,6 +244,27 @@ pub struct ServerConfig {
     /// [`FixedEchKeys`]: super::FixedEchKeys
     /// [`EchKeyResolver`]: super::EchKeyResolver
     pub ech_keys: Arc<dyn super::ech::EchKeyResolver>,
+
+    /// Whether to act as an ECH split-mode backend server.
+    ///
+    /// In split mode, a client-facing server decrypts the client's ECH offer and
+    /// forwards the inner ClientHello to a backend server, which terminates TLS
+    /// without having access to the ECH keys.
+    ///
+    /// When this is `true`, a ClientHello carrying an `encrypted_client_hello`
+    /// extension of type `inner` is accepted, and if TLS 1.3 is negotiated the
+    /// server confirms ECH acceptance to the client in its ServerHello (and in any
+    /// HelloRetryRequest). When this is `false`, such a ClientHello is rejected with
+    /// an `illegal_parameter` alert, as required of a server that only terminates
+    /// ECH itself (shared mode).
+    ///
+    /// This is independent of [`ServerConfig::ech_keys`]: a server can decrypt ECH
+    /// offers itself and act as a split-mode backend at the same time. It should
+    /// only be enabled on servers deployed behind an ECH client-facing server.
+    ///
+    /// The default is `false`.
+    /// See <https://datatracker.ietf.org/doc/html/rfc9849#section-7.2>.
+    pub ech_backend: bool,
 }
 
 impl ServerConfig {
@@ -415,7 +436,8 @@ pub struct ClientHello<'a> {
     /// [certificate_authorities]: https://datatracker.ietf.org/doc/html/rfc8446#section-4.2.4
     pub(super) certificate_authorities: Option<&'a [DistinguishedName]>,
     pub(super) named_groups: Option<&'a [NamedGroup]>,
-    /// Whether this ClientHello is the inner (decrypted) ECH hello.
+    /// Whether this ClientHello is the inner ECH hello (decrypted, or forwarded
+    /// by a split-mode client-facing server).
     pub(super) is_ech_inner: bool,
 }
 
@@ -456,12 +478,25 @@ impl<'a> ClientHello<'a> {
         }
     }
 
-    /// Whether this ClientHello is the inner (decrypted) ECH hello.
+    /// Whether this ClientHello is the inner ECH hello.
     ///
-    /// When `true`, the server has successfully decrypted an ECH offer and
-    /// this `ClientHello` represents the real client intent. If the resolver
-    /// returns an error for an ECH inner hello, the server falls back to
-    /// the outer ClientHello (ECH rewind).
+    /// When `true`, this `ClientHello` represents the real client intent: either
+    /// the server has successfully decrypted an ECH offer (shared mode), or it
+    /// received an inner ClientHello forwarded by a client-facing server while
+    /// [`ServerConfig::ech_backend`] is enabled (split-mode backend). ECH is never
+    /// accepted when TLS 1.2 is negotiated, so this is then `false`.
+    ///
+    /// In shared mode, if the resolver returns an error for an ECH inner hello,
+    /// the server falls back to the outer ClientHello (ECH rewind). As a
+    /// split-mode backend there is no outer ClientHello, so the error is returned.
+    ///
+    /// For the value returned by [`Accepted::client_hello()`], this reports
+    /// whether the received ClientHello carries an inner ECH extension. It is only
+    /// accepted if the [`ServerConfig`] passed to [`Accepted::into_connection()`]
+    /// enables [`ServerConfig::ech_backend`].
+    ///
+    /// [`Accepted::client_hello()`]: super::Accepted::client_hello
+    /// [`Accepted::into_connection()`]: super::Accepted::into_connection
     pub fn is_ech_inner(&self) -> bool {
         self.is_ech_inner
     }
@@ -722,6 +757,7 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
             cert_decompressors: compress::default_cert_decompressors().to_vec(),
             invalid_sni_policy: InvalidSniPolicy::default(),
             ech_keys: Arc::new(super::ech::FixedEchKeys::empty()),
+            ech_backend: false,
         })
     }
 }

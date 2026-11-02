@@ -20,7 +20,7 @@ use crate::crypto;
 use crate::crypto::cipher::Payload;
 use crate::error::{ApiMisuse, Error, ErrorWithAlert};
 use crate::log::trace;
-use crate::msgs::{ServerExtensionsInput, ServerNamePayload};
+use crate::msgs::{EncryptedClientHello, ServerExtensionsInput, ServerNamePayload};
 use crate::server::hs::{ChooseConfig, ExpectClientHello, ReadClientHello, ServerState};
 use crate::suites::ExtractedSecrets;
 use crate::sync::Arc;
@@ -74,10 +74,27 @@ impl ServerConnection {
     /// including `config_id` and outer server name.
     ///
     /// Returns `None` if ECH was not offered, was rejected, or was handled
-    /// by a split-mode frontend. The value is available after the ClientHello
-    /// has been processed.
+    /// by a split-mode frontend (see [`ServerConnection::ech_backend_accepted()`]).
+    /// The value is available after the ClientHello has been processed.
     pub fn ech_accepted(&self) -> Option<&super::ech::EchFrontendInfo> {
         self.inner.core.side.ech_accepted()
+    }
+
+    /// Whether this server confirmed ECH acceptance as a split-mode backend.
+    ///
+    /// This is `true` when [`ServerConfig::ech_backend`] is enabled, an inner
+    /// ClientHello was received from a client-facing server, and TLS 1.3 was
+    /// negotiated. The value is available after the ServerHello has been sent.
+    ///
+    /// This is `false` when this server decrypted the ECH offer itself; see
+    /// [`ServerConnection::ech_accepted()`] for that case.
+    ///
+    /// [`ServerConfig::ech_backend`]: super::ServerConfig::ech_backend
+    pub fn ech_backend_accepted(&self) -> bool {
+        self.inner
+            .core
+            .side
+            .ech_backend_accepted()
     }
 
     /// Application-controlled portion of the resumption ticket supplied by the client, if any.
@@ -463,7 +480,13 @@ impl Accepted {
                 .certificate_authority_names
                 .as_deref(),
             named_groups: client_hello.named_groups.as_deref(),
-            is_ech_inner: false,
+            // A ClientHello forwarded by a split-mode client-facing server carries
+            // an inner ECH extension. Whether it is accepted depends on the config
+            // later passed to `into_connection()`.
+            is_ech_inner: matches!(
+                client_hello.encrypted_client_hello,
+                Some(EncryptedClientHello::Inner)
+            ),
         };
 
         trace!("Accepted::client_hello(): {ch:#?}");
@@ -615,6 +638,7 @@ pub(crate) struct ServerConnectionData {
     received_resumption_data: Option<Vec<u8>>,
     early_data: EarlyDataState,
     ech_accepted: Option<super::ech::EchFrontendInfo>,
+    ech_backend_accepted: bool,
 }
 
 impl ServerConnectionData {
@@ -629,6 +653,10 @@ impl ServerConnectionData {
     pub(crate) fn ech_accepted(&self) -> Option<&super::ech::EchFrontendInfo> {
         self.ech_accepted.as_ref()
     }
+
+    pub(crate) fn ech_backend_accepted(&self) -> bool {
+        self.ech_backend_accepted
+    }
 }
 
 impl SideOutput for ServerConnectionData {
@@ -641,6 +669,7 @@ impl SideOutput for ServerConnectionData {
             Event::ReceivedServerName(sni) => self.sni = sni,
             Event::ResumptionData(data) => self.received_resumption_data = Some(data),
             Event::ServerEchAccepted(info) => self.ech_accepted = info,
+            Event::ServerEchBackendAccepted => self.ech_backend_accepted = true,
             _ => unreachable!(),
         }
     }

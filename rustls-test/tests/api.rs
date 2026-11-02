@@ -15,6 +15,9 @@ mod tests_with_ring {
     mod compress;
     #[path = "api/crypto.rs"]
     mod crypto;
+    #[cfg(feature = "aws-lc-rs")]
+    #[path = "api/ech_split_backend.rs"]
+    mod ech_split_backend;
     #[path = "api/ffdhe.rs"]
     mod ffdhe;
     #[path = "api/io.rs"]
@@ -48,6 +51,9 @@ mod tests_with_aws_lc_rs {
     mod compress;
     #[path = "api/crypto.rs"]
     mod crypto;
+    #[cfg(feature = "aws-lc-rs")]
+    #[path = "api/ech_split_backend.rs"]
+    mod ech_split_backend;
     #[path = "api/ffdhe.rs"]
     mod ffdhe;
     #[path = "api/io.rs"]

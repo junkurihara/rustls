@@ -262,6 +262,9 @@ mod client_hello {
                 &st.config,
                 st.ech.backend(),
             )?;
+            if st.ech.is_split_backend() {
+                output.emit(Event::ServerEchBackendAccepted);
+            }
             if !st.done_retry && !st.protocol.is_quic() {
                 emit_fake_ccs(output);
             }

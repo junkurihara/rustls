@@ -116,9 +116,6 @@
     "TLS-ECH-*": "ECH test suites use non-FIPS approved algos",
 #else
     "TLS-ECH-Client-NoSupportedConfigs": "we don't fallback to TLS w/o ECH for no supported configs",
-    "TLS-ECH-Server-ECHInner": "inner-direct (split-mode backend) not yet supported",
-    "TLS-ECH-Server-ECHInner-Absent-TLS12": "we reject ECHClientHello Inner per RFC 9849 section 7 (shared-mode server)",
-    "TLS-ECH-Server-ECHInner-HelloRetryRequest": "inner-direct (split-mode backend) not yet supported",
     "TLS-ECH-Client-NoSupportedConfigs-GREASE": "we don't fallback to GREASE for no ECH configs",
     "TLS-ECH-Client-Reject-EarlyDataRejected-TLS12": "we disable TLS1.2 w/ ECH",
     "TLS-ECH-Client-Reject-NoClientCertificate-TLS12": "we disable TLS1.2 w/ ECH",

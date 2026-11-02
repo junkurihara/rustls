@@ -269,10 +269,27 @@ impl ServerConnection {
     /// including `config_id` and outer server name.
     ///
     /// Returns `None` if ECH was not offered, was rejected, or was handled
-    /// by a split-mode frontend. The value is available after the ClientHello
-    /// has been processed.
+    /// by a split-mode frontend (see [`ServerConnection::ech_backend_accepted()`]).
+    /// The value is available after the ClientHello has been processed.
     pub fn ech_accepted(&self) -> Option<&crate::server::ech::EchFrontendInfo> {
         self.inner.core.side.ech_accepted()
+    }
+
+    /// Whether this server confirmed ECH acceptance as a split-mode backend.
+    ///
+    /// This is `true` when [`ServerConfig::ech_backend`] is enabled, an inner
+    /// ClientHello was received from a client-facing server, and TLS 1.3 was
+    /// negotiated. The value is available after the ServerHello has been sent.
+    ///
+    /// This is `false` when this server decrypted the ECH offer itself; see
+    /// [`ServerConnection::ech_accepted()`] for that case.
+    ///
+    /// [`ServerConfig::ech_backend`]: crate::server::ServerConfig::ech_backend
+    pub fn ech_backend_accepted(&self) -> bool {
+        self.inner
+            .core
+            .side
+            .ech_backend_accepted()
     }
 
     /// Set the resumption data to embed in future resumption tickets supplied to the client.
